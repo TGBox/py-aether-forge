@@ -47,3 +47,64 @@ def test_battle_engine_build_and_start_wave() -> None:
     # Surface render test
     surf = pygame.Surface((800, 600))
     engine.draw(surf)
+
+
+def test_multi_wave_and_draft_progression() -> None:
+    pygame.init()
+    engine = BattleEngine(width=800, height=600)
+
+    # --- WAVE 1 ---
+    assert engine.match_state.current_state == GameState.PREPARATION
+    assert engine.start_next_wave()
+    assert engine.match_state.current_state == GameState.WAVE
+
+    # Force-clear spawning and creeps to simulate wave 1 victory
+    engine.wave_spawner.spawn_queue.clear()
+    engine.creeps.clear()
+    engine.update(0.1)
+
+    assert engine.match_state.current_state == GameState.DRAFT
+    assert len(engine.draft_options) == 3
+
+    # Select draft shard 0 and dock it at a valid location (e.g. above portal at (2, 3))
+    engine.select_draft_shard(0)
+    placed = False
+    for x in range(engine.grid.width):
+        for y in range(engine.grid.height):
+            if engine.place_draft_shard(x, y):
+                placed = True
+                break
+        if placed:
+            break
+
+    assert placed, "Could not find a valid docking spot for shard in wave 1"
+    assert engine.match_state.current_state == GameState.PREPARATION
+    assert len(engine.draft_options) == 0
+
+    # --- WAVE 2 ---
+    assert engine.start_next_wave()
+    assert engine.match_state.current_state == GameState.WAVE
+    assert engine.match_state.wave_number == 2
+
+    # Force-clear wave 2
+    engine.wave_spawner.spawn_queue.clear()
+    engine.creeps.clear()
+    engine.update(0.1)
+
+    assert engine.match_state.current_state == GameState.DRAFT
+    assert len(engine.draft_options) == 3, "Draft options must be populated after wave 2!"
+
+    # Select draft shard 1 and dock it
+    engine.select_draft_shard(1)
+    placed_wave2 = False
+    for x in range(engine.grid.width):
+        for y in range(engine.grid.height):
+            if engine.place_draft_shard(x, y):
+                placed_wave2 = True
+                break
+        if placed_wave2:
+            break
+
+    assert placed_wave2, "Could not find a valid docking spot for shard in wave 2"
+    assert engine.match_state.current_state == GameState.PREPARATION
+    assert len(engine.draft_options) == 0

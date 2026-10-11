@@ -115,8 +115,15 @@ class BattleEngine:
         return True
 
     def build_tower(self, gx: int, gy: int, element: ElementType) -> bool:
-        """Places a tower on an available build slot."""
-        cost = 80
+        """Places a tower on an available build slot using its specific element specs."""
+        from py_aether_forge.towers.elements import ELEMENT_SPECS
+
+        spec = ELEMENT_SPECS.get(element)
+        cost = spec.cost if spec else 80
+        damage = spec.damage if spec else 25.0
+        fire_rate = spec.fire_rate if spec else 1.1
+        range_radius = spec.range_radius if spec else 3.0
+
         if not self.grid.is_buildable(gx, gy) or not self.economy.spend(cost):
             return False
 
@@ -124,15 +131,50 @@ class BattleEngine:
             x=gx,
             y=gy,
             element=element,
-            damage=25.0,
-            fire_rate=1.1,
-            range_radius=3.0,
+            damage=damage,
+            fire_rate=fire_rate,
+            range_radius=range_radius,
             cost=cost,
         )
         self.towers.append(tower)
         self.grid.get_tile(gx, gy).has_tower = True
         self.selected_tower = tower
         self.audio.play("shoot")
+        return True
+
+    def get_upgrade_cost(self, tower: Tower) -> int:
+        """Calculates cost to upgrade a tower to the next level."""
+        return int(tower.cost * 0.75 * tower.level)
+
+    def upgrade_selected_tower(self) -> bool:
+        """Upgrades the currently selected tower if affordable."""
+        if self.selected_tower is None:
+            return False
+        cost = self.get_upgrade_cost(self.selected_tower)
+        if not self.economy.spend(cost):
+            return False
+        self.selected_tower.upgrade()
+        cx, cy = self.viewport.grid_center_to_screen(self.selected_tower.x, self.selected_tower.y)
+        self.particles.emit_burst(cx, cy, (130, 220, 255), count=18, speed=100.0)
+        self.audio.play("wave")
+        return True
+
+    def get_sell_refund(self, tower: Tower) -> int:
+        """Calculates resale value (70% of base cost)."""
+        return int(tower.cost * 0.7)
+
+    def sell_selected_tower(self) -> bool:
+        """Sells the currently selected tower and refunds aether dust."""
+        if self.selected_tower is None:
+            return False
+        refund = self.get_sell_refund(self.selected_tower)
+        self.economy.add_aether(refund)
+        self.grid.get_tile(self.selected_tower.x, self.selected_tower.y).has_tower = False
+        cx, cy = self.viewport.grid_center_to_screen(self.selected_tower.x, self.selected_tower.y)
+        self.particles.emit_burst(cx, cy, (255, 205, 60), count=15, speed=80.0)
+        self.towers.remove(self.selected_tower)
+        self.selected_tower = None
+        self.audio.play("hit")
         return True
 
     def fuse_selected_tower(self, second_element: ElementType) -> bool:
@@ -284,11 +326,32 @@ class BattleEngine:
 
     def draw(self, surface: pygame.Surface) -> None:
         """Full tactical frame rendering."""
+        from py_aether_forge.towers.elements import ELEMENT_SPECS
+
         self.starfield.draw(surface)
         self.viewport.draw_grid(surface, self.grid, self.hover_tile)
         self.viewport.draw_towers(surface, self.towers, self.selected_tower)
         self.viewport.draw_creeps(surface, self.creeps)
         self.particles.draw(surface)
+
+        # Draw range preview ghost when hovering over a buildable tile
+        if (
+            self.match_state.current_state in (GameState.PREPARATION, GameState.WAVE)
+            and self.hover_tile
+            and self.grid.is_buildable(*self.hover_tile)
+        ):
+            spec = ELEMENT_SPECS.get(self.selected_build_element)
+            if spec:
+                cx, cy = self.viewport.grid_center_to_screen(*self.hover_tile)
+                range_px = int(spec.range_radius * self.viewport.tile_size)
+                ghost_surf = pygame.Surface((range_px * 2 + 4, range_px * 2 + 4), pygame.SRCALPHA)
+                pygame.draw.circle(
+                    ghost_surf, (130, 220, 255, 30), (range_px + 2, range_px + 2), range_px
+                )
+                pygame.draw.circle(
+                    ghost_surf, (130, 220, 255, 140), (range_px + 2, range_px + 2), range_px, 1
+                )
+                surface.blit(ghost_surf, (cx - range_px - 2, cy - range_px - 2))
 
         # Draw draft preview if in draft state and shard selected
         if (
