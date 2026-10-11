@@ -11,6 +11,7 @@ os.environ["SDL_AUDIODRIVER"] = "dummy"
 from PySide6.QtWidgets import QApplication
 
 from py_aether_forge.app import AetherForgeWindow
+from py_aether_forge.core.grid import TileType
 from py_aether_forge.core.state import GameState
 from py_aether_forge.meta.save_system import SaveSystem
 from py_aether_forge.towers.elements import ElementType
@@ -128,7 +129,7 @@ def test_ui_tower_inspector_and_stats_display(tmp_path) -> None:
     assert bv.inspector_panel.isHidden()
 
     # Build a fire tower at valid slot
-    build_slots = engine.grid.find_tiles_of_type(engine.grid.get_tile(3, 4).tile_type)
+    build_slots = engine.grid.find_tiles_of_type(TileType.PLATFORM_BUILD)
     bx, by = build_slots[0].x, build_slots[0].y
     engine.build_tower(bx, by, ElementType.FIRE)
     bv._update_hud_display()

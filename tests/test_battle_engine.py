@@ -8,6 +8,7 @@ os.environ["SDL_AUDIODRIVER"] = "dummy"
 
 import pygame
 
+from py_aether_forge.core.grid import TileType
 from py_aether_forge.core.state import GameState
 from py_aether_forge.render.battle_engine import BattleEngine
 from py_aether_forge.towers.elements import ElementType
@@ -26,7 +27,7 @@ def test_battle_engine_build_and_start_wave() -> None:
     engine = BattleEngine(width=800, height=600)
 
     # Find a valid build slot
-    build_slots = engine.grid.find_tiles_of_type(engine.grid.get_tile(3, 4).tile_type)
+    build_slots = engine.grid.find_tiles_of_type(TileType.PLATFORM_BUILD)
     assert len(build_slots) > 0
     bx, by = build_slots[0].x, build_slots[0].y
 

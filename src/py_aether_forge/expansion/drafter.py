@@ -14,52 +14,66 @@ def get_default_shard_templates() -> list[PlatformShard]:
     return [
         PlatformShard(
             name="Astral-Bastion",
-            description="Solide Plattform mit vier Turmplätzen und zentralem Korridor.",
+            description="Solide Plattform mit sechs Turmplätzen und breitem Korridor.",
             layout=[
-                [b, w, b],
-                [b, w, b],
+                [b, w, w, b],
+                [b, w, w, b],
+                [b, b, b, b],
             ],
-            bonus_aether=15,
+            bonus_aether=20,
         ),
         PlatformShard(
             name="Serpentinen-Steg",
             description="Verlängert den Anmarschweg der Schwärme durch gewundenen Pfad.",
             layout=[
-                [w, w, w],
-                [b, b, w],
-                [w, w, w],
+                [w, w, w, w],
+                [b, b, b, w],
+                [w, w, w, w],
             ],
-            bonus_aether=25,
+            bonus_aether=30,
         ),
         PlatformShard(
             name="Flammen-Runen-Scholle",
             description="Gewährt +20% Feuerschaden auf platzierten Türmen.",
             layout=[
-                [b, w],
-                [b, w],
+                [b, w, b],
+                [b, w, b],
+                [b, w, b],
             ],
             rune_affinity="FIRE_BONUS",
-            bonus_aether=20,
+            bonus_aether=25,
         ),
         PlatformShard(
             name="Frost-Zuflucht",
             description="Erhöht Verlangsamungseffekte von Eistürmen auf dieser Scholle.",
             layout=[
-                [w, b, b],
-                [w, w, b],
+                [w, b, b, b],
+                [w, w, w, b],
+                [b, b, w, b],
             ],
             rune_affinity="ICE_BONUS",
-            bonus_aether=20,
+            bonus_aether=25,
         ),
         PlatformShard(
             name="Arkaner Ausblick",
             description="Erhöht die Reichweite gebauter Türme um 1 Feld.",
             layout=[
-                [b, b, b],
-                [w, w, w],
+                [b, b, b, b],
+                [w, w, w, w],
+                [b, b, b, b],
             ],
             rune_affinity="RANGE_BONUS",
-            bonus_aether=30,
+            bonus_aether=35,
+        ),
+        PlatformShard(
+            name="Astral-Kreuzung",
+            description="Strategischer Knotenpunkt mit viel Raum für mazing und Verteidigung.",
+            layout=[
+                [b, w, b, b],
+                [w, w, w, w],
+                [b, w, b, b],
+            ],
+            bonus_aether=25,
         ),
     ]
 

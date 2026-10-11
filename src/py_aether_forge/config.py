@@ -16,8 +16,8 @@ class WindowConfig:
 @dataclass(frozen=True)
 class GridConfig:
     tile_size: int = 48
-    initial_cols: int = 15
-    initial_rows: int = 11
+    initial_cols: int = 23
+    initial_rows: int = 17
 
 
 @dataclass(frozen=True)

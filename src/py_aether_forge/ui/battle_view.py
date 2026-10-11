@@ -3,10 +3,8 @@
 import logging
 
 import pygame
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal
-
-logger = logging.getLogger(__name__)
-from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPainter
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QImage, QKeyEvent, QMouseEvent, QPainter, QWheelEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -17,11 +15,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from py_aether_forge.core.grid import TileType
 from py_aether_forge.core.state import GameState
+from py_aether_forge.expansion.platform import PlatformShard
 from py_aether_forge.meta.save_system import SaveData, SaveSystem
 from py_aether_forge.render.battle_engine import BattleEngine
 from py_aether_forge.towers.elements import ELEMENT_SPECS, ElementType
 from py_aether_forge.towers.targeting import TargetMode
+
+logger = logging.getLogger(__name__)
 
 TARGET_MODE_NAMES_DE = {
     TargetMode.FIRST: "Erster (Verhindert Leaks)",
@@ -30,6 +32,48 @@ TARGET_MODE_NAMES_DE = {
     TargetMode.WEAKEST: "Schwächster (Schnelle Kills)",
     TargetMode.CLOSEST: "Nächster (Kürzeste Distanz)",
 }
+
+
+class PlatformMiniPreview(QWidget):
+    """Renders a miniature blueprint preview of a platform shard prior to purchase."""
+
+    def __init__(self, shard: PlatformShard, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.shard = shard
+        self.tile_px = 22
+        cols = max(1, shard.width)
+        rows = max(1, shard.height)
+        self.setFixedSize(cols * self.tile_px + 8, rows * self.tile_px + 8)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        tp = self.tile_px
+        for r, row in enumerate(self.shard.layout):
+            for c, tile_type in enumerate(row):
+                x = 4 + c * tp
+                y = 4 + r * tp
+                rect = QRect(x, y, tp - 2, tp - 2)
+
+                if tile_type == TileType.VOID:
+                    painter.fillRect(rect, QColor(14, 18, 32))
+                    painter.setPen(QColor(30, 38, 60))
+                    painter.drawRect(rect)
+                elif tile_type == TileType.PLATFORM_WALK:
+                    painter.fillRect(rect, QColor(52, 63, 102))
+                    painter.setPen(QColor(84, 102, 158))
+                    painter.drawRect(rect)
+                elif tile_type == TileType.PLATFORM_BUILD:
+                    painter.fillRect(rect, QColor(70, 85, 135))
+                    painter.setPen(QColor(130, 220, 255))
+                    painter.drawRect(rect)
+                    # Rune pedestal center dot
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor(240, 248, 255, 230))
+                    painter.drawEllipse(x + tp // 2 - 3, y + tp // 2 - 3, 5, 5)
+
+        painter.end()
 
 
 class BattleViewWidget(QWidget):
@@ -46,6 +90,11 @@ class BattleViewWidget(QWidget):
         self.engine: BattleEngine | None = None
         self.pygame_surface: pygame.Surface | None = None
         self._last_draft_wave: int = -1
+
+        # Camera pan and drag state
+        self._pan_start_pos = QPoint()
+        self._is_panning = False
+        self._pan_active_btn: Qt.MouseButton | None = None
 
         self._setup_hud_overlay()
 
@@ -72,6 +121,7 @@ class BattleViewWidget(QWidget):
             core_health_bonus=save_data.core_health_bonus,
         )
         self.pygame_surface = pygame.Surface((w, h))
+        self.engine.viewport.center_on_grid(w, h, self.engine.grid.width, self.engine.grid.height)
         self._last_draft_wave = -1
         self.timer.start(16)
         self._update_hud_display()
@@ -114,6 +164,43 @@ class BattleViewWidget(QWidget):
         top_layout.addWidget(self.lbl_shards)
 
         top_layout.addStretch()
+
+        # Camera controls (Zoom & Center)
+        self.btn_zoom_out = QPushButton("➖")
+        self.btn_zoom_out.setToolTip("Herauszoomen (Mausrad runter)")
+        self.btn_zoom_out.setStyleSheet("""
+            QPushButton {
+                background: #1C2338; color: #82DCFF; border: 1px solid #4A5B82;
+                font-weight: bold; padding: 5px 10px; border-radius: 4px; font-size: 13px;
+            }
+            QPushButton:hover { background: #2A3654; }
+        """)
+        self.btn_zoom_out.clicked.connect(lambda: self._zoom_step(0.85))
+        top_layout.addWidget(self.btn_zoom_out)
+
+        self.btn_zoom_in = QPushButton("➕")
+        self.btn_zoom_in.setToolTip("Heranzoomen (Mausrad hoch)")
+        self.btn_zoom_in.setStyleSheet("""
+            QPushButton {
+                background: #1C2338; color: #82DCFF; border: 1px solid #4A5B82;
+                font-weight: bold; padding: 5px 10px; border-radius: 4px; font-size: 13px;
+            }
+            QPushButton:hover { background: #2A3654; }
+        """)
+        self.btn_zoom_in.clicked.connect(lambda: self._zoom_step(1.18))
+        top_layout.addWidget(self.btn_zoom_in)
+
+        self.btn_center = QPushButton("🔍 Zentrieren (C)")
+        self.btn_center.setToolTip("Kamera auf das Spielfeld zentrieren (Taste C)")
+        self.btn_center.setStyleSheet("""
+            QPushButton {
+                background: #1C2338; color: #E2E8F0; border: 1px solid #4A5B82;
+                font-weight: bold; padding: 5px 10px; border-radius: 4px; font-size: 12px;
+            }
+            QPushButton:hover { background: #2A3654; }
+        """)
+        self.btn_center.clicked.connect(self._center_camera)
+        top_layout.addWidget(self.btn_center)
 
         self.btn_start_wave = QPushButton("▶ Welle Starten (Leertaste)")
         self.btn_start_wave.setStyleSheet("""
@@ -180,6 +267,26 @@ class BattleViewWidget(QWidget):
         self.draft_cards_layout = QHBoxLayout()
         self.draft_cards_layout.setSpacing(14)
         self.draft_vlayout.addLayout(self.draft_cards_layout)
+
+        draft_actions_row = QHBoxLayout()
+        draft_actions_row.addStretch()
+        self.btn_rotate_shard = QPushButton("🔄 Scholle drehen (Taste R / Rechtsklick)")
+        self.btn_rotate_shard.setStyleSheet("""
+            QPushButton {
+                background: #1C334E;
+                color: #82DCFF;
+                border: 1px solid #4FC3F7;
+                border-radius: 6px;
+                padding: 6px 16px;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton:hover { background: #2A4D75; }
+        """)
+        self.btn_rotate_shard.clicked.connect(self._on_rotate_shard)
+        draft_actions_row.addWidget(self.btn_rotate_shard)
+        draft_actions_row.addStretch()
+        self.draft_vlayout.addLayout(draft_actions_row)
 
         main_layout.addWidget(self.draft_container)
         self.draft_container.hide()
@@ -575,6 +682,19 @@ class BattleViewWidget(QWidget):
             lbl_name.setStyleSheet("font-size: 15px; font-weight: bold; color: #82DCFF;")
             card_layout.addWidget(lbl_name)
 
+            # Miniature tactical layout preview
+            preview = PlatformMiniPreview(shard)
+            card_layout.addWidget(preview, alignment=Qt.AlignmentFlag.AlignCenter)
+
+            walk_count = sum(row.count(TileType.PLATFORM_WALK) for row in shard.layout)
+            build_count = sum(row.count(TileType.PLATFORM_BUILD) for row in shard.layout)
+            lbl_stats = QLabel(
+                f"📐 {shard.width}×{shard.height} Kacheln  |  🛡 {build_count} Bauplätze  |  🚶 {walk_count} Gehwege"
+            )
+            lbl_stats.setStyleSheet("color: #82DCFF; font-size: 11px; font-weight: bold;")
+            lbl_stats.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            card_layout.addWidget(lbl_stats)
+
             lbl_desc = QLabel(shard.description)
             lbl_desc.setWordWrap(True)
             lbl_desc.setStyleSheet("color: #BAC7E0; font-size: 12px;")
@@ -610,7 +730,7 @@ class BattleViewWidget(QWidget):
             shard = self.engine.selected_draft_shard
             if shard:
                 self.draft_instruction.setText(
-                    f"👉 Ausgewählt: '{shard.name}'. Klicke jetzt auf das Spielfeld, um die Scholle an einer grünen Kante anzudocken!"
+                    f"👉 Ausgewählt: '{shard.name}' ({shard.width}×{shard.height}). Klicke auf das Spielfeld zum Andocken • Drehen: Taste [R] oder Rechtsklick!"
                 )
 
     def _update_inspector(self) -> None:
@@ -725,25 +845,107 @@ class BattleViewWidget(QWidget):
             self.engine.fuse_selected_tower(second_elem)
             self._update_inspector()
 
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+    def _zoom_step(self, factor: float) -> None:
+        if self.engine:
+            cx, cy = self.width() // 2, self.height() // 2
+            self.engine.viewport.zoom_at(cx, cy, factor)
+            self.update()
+
+    def _center_camera(self) -> None:
+        if self.engine:
+            w, h = max(1, self.width()), max(1, self.height())
+            self.engine.viewport.zoom = 1.0
+            self.engine.viewport.center_on_grid(
+                w, h, self.engine.grid.width, self.engine.grid.height
+            )
+            self.update()
+
+    def _on_rotate_shard(self) -> None:
+        if self.engine and self.engine.selected_draft_shard:
+            self.engine.rotate_selected_draft_shard()
+            shard = self.engine.selected_draft_shard
+            self.draft_instruction.setText(
+                f"🔄 Gedreht: '{shard.name}' ({shard.width}×{shard.height}). Klicke auf das Spielfeld zum Andocken • Drehen: Taste [R] oder Rechtsklick!"
+            )
+            self.update()
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
         if self.engine:
             pos = event.position().toPoint()
-            gx, gy = self.engine.viewport.screen_to_grid(pos.x(), pos.y())
-            self.engine.hover_tile = (gx, gy)
-        super().mouseMoveEvent(event)
+            delta = event.angleDelta().y()
+            factor = 1.15 if delta > 0 else 0.87
+            self.engine.viewport.zoom_at(pos.x(), pos.y(), factor)
+            self.update()
+        super().wheelEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if self.engine:
-            pos = event.position().toPoint()
-            btn = 1 if event.button() == Qt.MouseButton.LeftButton else 3
-            self.engine.handle_mouse_click(pos.x(), pos.y(), btn)
+        pos = event.position().toPoint()
+        if event.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton):
+            self._pan_start_pos = pos
+            self._is_panning = False
+            self._pan_active_btn = event.button()
+            if event.button() == Qt.MouseButton.MiddleButton:
+                self._is_panning = True
+                return
+
+        if event.button() == Qt.MouseButton.LeftButton and self.engine:
+            self.engine.handle_mouse_click(pos.x(), pos.y(), 1)
             self._update_hud_display()
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        pos = event.position().toPoint()
+        if hasattr(self, "_pan_active_btn") and self._pan_active_btn:
+            delta = pos - self._pan_start_pos
+            if not self._is_panning and delta.manhattanLength() > 5:
+                self._is_panning = True
+            if self._is_panning and self.engine:
+                self.engine.viewport.pan(delta.x(), delta.y())
+                self._pan_start_pos = pos
+                self.update()
+                return
+
+        if self.engine:
+            gx, gy = self.engine.viewport.screen_to_grid(pos.x(), pos.y())
+            self.engine.hover_tile = (gx, gy)
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if hasattr(self, "_pan_active_btn") and event.button() == self._pan_active_btn:
+            was_panning = getattr(self, "_is_panning", False)
+            self._is_panning = False
+            self._pan_active_btn = None
+            if was_panning:
+                return
+
+            # Clean right-click without drag -> execute right-click action (e.g. rotate shard or demolish)
+            if event.button() == Qt.MouseButton.RightButton and self.engine:
+                pos = event.position().toPoint()
+                self.engine.handle_mouse_click(pos.x(), pos.y(), 3)
+                self._update_hud_display()
+                self.update()
+                return
+        super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Space:
             self._on_start_wave_clicked()
+        elif event.key() == Qt.Key.Key_R:
+            self._on_rotate_shard()
+        elif event.key() == Qt.Key.Key_C:
+            self._center_camera()
         super().keyPressEvent(event)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self.engine:
+            w, h = max(1, self.width()), max(1, self.height())
+            if not self.pygame_surface or self.pygame_surface.get_size() != (w, h):
+                self.pygame_surface = pygame.Surface((w, h))
+                self.engine.width = w
+                self.engine.height = h
+                self.engine.starfield.resize(w, h)
 
     def paintEvent(self, event) -> None:
         if not self.engine or not self.pygame_surface:

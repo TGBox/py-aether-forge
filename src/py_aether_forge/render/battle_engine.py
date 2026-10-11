@@ -82,6 +82,7 @@ class BattleEngine:
 
         self._setup_initial_arena()
         self._recalculate_swarm_path()
+        self.viewport.center_on_grid(width, height, self.grid.width, self.grid.height)
 
     def _setup_initial_arena(self) -> None:
         """Constructs the initial floating platform with a central walkway and tower build foundations."""
@@ -353,6 +354,14 @@ class BattleEngine:
         if 0 <= index < len(self.draft_options):
             self.selected_draft_shard = self.draft_options[index]
 
+    def rotate_selected_draft_shard(self, clockwise: bool = True) -> bool:
+        """Rotates the currently selected platform shard by 90 degrees."""
+        if self.selected_draft_shard is not None:
+            self.selected_draft_shard.rotate(clockwise)
+            self.audio.play("build")
+            return True
+        return False
+
     def place_draft_shard(self, origin_x: int, origin_y: int) -> bool:
         """Docks the chosen draft shard onto the grid at the designated anchor."""
         if self.selected_draft_shard is None:
@@ -509,7 +518,11 @@ class BattleEngine:
                     self.selected_tower = None
                     self.selected_barrier = None
 
-        elif button == 3:  # Right click: Quick demolish barrier or deselect
+        elif button == 3:  # Right click: Quick demolish barrier or rotate draft shard / deselect
+            if self.match_state.current_state == GameState.DRAFT and self.selected_draft_shard:
+                self.rotate_selected_draft_shard()
+                return
+
             tile = self.grid.get_tile(gx, gy)
             if tile.has_barrier:
                 self.remove_barrier(gx, gy)
@@ -579,22 +592,12 @@ class BattleEngine:
             surface.blit(pill, pad_rect)
             surface.blit(txt_surf, bg_rect)
 
-        # Draw draft preview if in draft state and shard selected
+        # Draw rich draft preview if in draft state and shard selected
         if (
             self.match_state.current_state == GameState.DRAFT
             and self.selected_draft_shard
             and self.hover_tile
         ):
-            hx, hy = self.hover_tile
-            is_valid = is_valid_docking_location(self.grid, self.selected_draft_shard, hx, hy)
-            preview_color = (100, 255, 140, 90) if is_valid else (255, 70, 70, 90)
-
-            for dy, row in enumerate(self.selected_draft_shard.layout):
-                for dx, ttype in enumerate(row):
-                    if ttype != TileType.VOID:
-                        px, py = self.viewport.grid_to_screen(hx + dx, hy + dy)
-                        psurf = pygame.Surface(
-                            (self.viewport.tile_size, self.viewport.tile_size), pygame.SRCALPHA
-                        )
-                        psurf.fill(preview_color)
-                        surface.blit(psurf, (px, py))
+            self.viewport.draw_draft_preview(
+                surface, self.grid, self.selected_draft_shard, self.hover_tile
+            )

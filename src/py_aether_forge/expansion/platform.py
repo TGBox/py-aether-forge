@@ -24,6 +24,27 @@ class PlatformShard:
     def width(self) -> int:
         return len(self.layout[0]) if self.layout else 0
 
+    def rotate(self, clockwise: bool = True) -> "PlatformShard":
+        """Rotates the shard layout by 90 degrees."""
+        if not self.layout or not self.layout[0]:
+            return self
+
+        old_h = self.height
+        if clockwise:
+            # 90 degrees clockwise: transpose and reverse rows
+            self.layout = [list(reversed(col)) for col in zip(*self.layout)]
+            if self.portal_offset is not None:
+                px, py = self.portal_offset
+                self.portal_offset = (old_h - 1 - py, px)
+        else:
+            # 90 degrees counter-clockwise
+            self.layout = [list(col) for col in reversed(list(zip(*self.layout)))]
+            if self.portal_offset is not None:
+                old_w = len(self.layout)  # height of new layout is width of old
+                px, py = self.portal_offset
+                self.portal_offset = (py, old_w - 1 - px)
+        return self
+
     def place_on_grid(self, grid: Grid, origin_x: int, origin_y: int) -> bool:
         """Places the shard onto the grid at (origin_x, origin_y).
 
