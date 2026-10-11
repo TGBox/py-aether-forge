@@ -22,6 +22,7 @@ from py_aether_forge.meta.save_system import SaveData, SaveSystem
 from py_aether_forge.render.battle_engine import BattleEngine
 from py_aether_forge.towers.elements import ELEMENT_SPECS, ElementType
 from py_aether_forge.towers.targeting import TargetMode
+from py_aether_forge.towers.tower import Tower
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,10 @@ class BattleViewWidget(QWidget):
         self._pan_start_pos = QPoint()
         self._is_panning = False
         self._pan_active_btn: Qt.MouseButton | None = None
+
+        # Inspector cache
+        self._fusion_buttons: list[tuple[QPushButton, ElementType, int, str]] = []
+        self._last_inspected_signature: tuple | None = None
 
         self._setup_hud_overlay()
 
@@ -599,6 +604,7 @@ class BattleViewWidget(QWidget):
         if self.engine:
             self.engine.selected_tower = None
             self.engine.selected_barrier = None
+        self._last_inspected_signature = None
         self.inspector_panel.hide()
         self.build_bar.show()
 
@@ -857,11 +863,21 @@ class BattleViewWidget(QWidget):
             self.combo_target_mode.setCurrentIndex(idx)
             self.combo_target_mode.blockSignals(False)
 
-        # Fusions
+        # Fusions: rebuild only when inspected tower signature changes
+        current_signature = (id(t), t.element, t.level, t.is_hybrid)
+        if getattr(self, "_last_inspected_signature", None) != current_signature:
+            self._last_inspected_signature = current_signature
+            self._rebuild_fusion_buttons(t)
+        else:
+            self._refresh_fusion_buttons(t)
+
+    def _rebuild_fusion_buttons(self, t: Tower) -> None:
+        """Constructs fusion buttons once per tower selection/transformation."""
         while self.fusion_layout.count():
             item = self.fusion_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        self._fusion_buttons.clear()
 
         if not t.is_hybrid:
             for other_elem in (
@@ -880,14 +896,29 @@ class BattleViewWidget(QWidget):
                 cost = 120
 
                 btn_fuse = QPushButton(f"⚡ Fusion: {hname} ({cost} ✨)")
-                can_fuse = self.engine.fusion_registry.can_fuse(
-                    t.element, other_elem, self.engine.unlocked_hybrids
-                )
-                has_gold = self.engine.economy.can_afford(cost)
+                btn_fuse.clicked.connect(lambda _, e=other_elem: self._on_fuse_clicked(e))
+                self.fusion_layout.addWidget(btn_fuse)
+                self._fusion_buttons.append((btn_fuse, other_elem, cost, hname))
 
-                if can_fuse:
-                    btn_fuse.setEnabled(has_gold)
-                    btn_fuse.setStyleSheet("""
+        self._refresh_fusion_buttons(t)
+
+    def _refresh_fusion_buttons(self, t: Tower) -> None:
+        """Lightweight tick update of button enabled state without destroying Qt widgets."""
+        if not self.engine:
+            return
+        for btn, other_elem, cost, hname in self._fusion_buttons:
+            can_fuse = self.engine.fusion_registry.can_fuse(
+                t.element, other_elem, self.engine.unlocked_hybrids
+            )
+            has_gold = self.engine.economy.can_afford(cost)
+            if can_fuse:
+                btn.setEnabled(has_gold)
+                btn.setText(f"⚡ Fusion: {hname} ({cost} ✨)")
+                if has_gold:
+                    btn.setToolTip(
+                        f"Klicke, um Turm zu {hname} zu verschmelzen (+{cost} ✨ Investition)!"
+                    )
+                    btn.setStyleSheet("""
                         QPushButton {
                             background: #4A1D5E;
                             color: #E2B6FF;
@@ -898,26 +929,41 @@ class BattleViewWidget(QWidget):
                         }
                         QPushButton:hover { background: #6A2D8E; }
                     """)
-                    btn_fuse.clicked.connect(lambda _, e=other_elem: self._on_fuse_clicked(e))
                 else:
-                    btn_fuse.setEnabled(False)
-                    btn_fuse.setText(f"🔒 {hname} (In Schmiede erforschen)")
-                    btn_fuse.setStyleSheet("""
+                    btn.setToolTip(f"Nicht genügend Äther-Staub ({cost} ✨ benötigt)!")
+                    btn.setStyleSheet("""
                         QPushButton {
-                            background: #201726;
-                            color: #7A6588;
-                            border: 1px solid #443350;
-                            padding: 6px 10px;
+                            background: #2D1A38;
+                            color: #9977AA;
+                            border: 1px solid #664477;
+                            padding: 6px 12px;
                             border-radius: 6px;
+                            font-weight: bold;
                         }
                     """)
-
-                self.fusion_layout.addWidget(btn_fuse)
+            else:
+                btn.setEnabled(False)
+                btn.setText(f"🔒 {hname} (In Schmiede erforschen)")
+                btn.setToolTip(
+                    f"{hname} muss im Hauptmenü (Heiligtum / Astrale Schmiede) erforscht werden!"
+                )
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background: #201726;
+                        color: #7A6588;
+                        border: 1px solid #443350;
+                        padding: 6px 10px;
+                        border-radius: 6px;
+                    }
+                """)
 
     def _on_fuse_clicked(self, second_elem: ElementType) -> None:
         if self.engine:
-            self.engine.fuse_selected_tower(second_elem)
-            self._update_inspector()
+            success = self.engine.fuse_selected_tower(second_elem)
+            if success:
+                self._last_inspected_signature = None
+                self._update_inspector()
+                self._update_hud_display()
 
     def _on_skip_draft(self) -> None:
         """Forgoes platform shard drafting and claims double dust bonus instead."""
@@ -1056,46 +1102,54 @@ class BattleViewWidget(QWidget):
         if not self.engine or not self.engine.selected_creep:
             return
         creep = self.engine.selected_creep
-        boss_prefix = "👑 BOSS: " if creep.is_boss else ""
-        self.lbl_creep_name.setText(f"{boss_prefix}{creep.name}")
-        self.lbl_creep_type_badge.setText(creep.armor_type.name)
+        try:
+            boss_prefix = "👑 BOSS: " if creep.is_boss else ""
+            self.lbl_creep_name.setText(f"{boss_prefix}{creep.name}")
+            self.lbl_creep_type_badge.setText(creep.armor_type.name)
 
-        self.lbl_creep_hp.setText(
-            f"❤️ Leben: {max(0, int(creep.current_health))} / {int(creep.max_health)}"
-        )
-        self.lbl_creep_speed.setText(f"⚡ Tempo: {creep.speed:.1f}")
-        self.lbl_creep_bounty.setText(f"✨ Kopfgeld: +{creep.bounty}")
+            hp_val = getattr(creep, "hp", getattr(creep, "current_health", 0.0))
+            max_hp_val = getattr(creep, "max_hp", hp_val)
+            self.lbl_creep_hp.setText(f"❤️ Leben: {max(0, int(hp_val))} / {int(max_hp_val)}")
+            self.lbl_creep_speed.setText(f"⚡ Tempo: {creep.speed:.1f}")
+            self.lbl_creep_bounty.setText(f"✨ Kopfgeld: +{creep.bounty}")
 
-        self.lbl_creep_weakness.setText(f"⚡ Schwächen: {creep.weaknesses_text}")
-        self.lbl_creep_resistance.setText(f"🛡 Resistenzen: {creep.resistances_text}")
+            self.lbl_creep_weakness.setText(f"⚡ Schwächen: {creep.weaknesses_text}")
+            self.lbl_creep_resistance.setText(f"🛡 Resistenzen: {creep.resistances_text}")
 
-        special_desc = []
-        if creep.regen_per_second > 0:
-            if creep.is_burning:
-                special_desc.append(
-                    f"Regeneration (+{creep.regen_per_second:.0f}/s) BLOCKIERT durch Verbrennung!"
+            special_desc = []
+            if creep.regen_per_second > 0:
+                if creep.is_burning:
+                    special_desc.append(
+                        f"Regeneration (+{creep.regen_per_second:.0f}/s) BLOCKIERT durch Verbrennung!"
+                    )
+                else:
+                    special_desc.append(f"Regeneration (+{creep.regen_per_second:.0f}/s HP)")
+            if creep.is_boss:
+                special_desc.append("Immense Lebenskraft")
+            self.lbl_creep_special.setText(
+                f"✨ Besonderheit: {', '.join(special_desc) if special_desc else 'Standard'}"
+            )
+
+            effects_strs = []
+            for eff in creep.active_effects:
+                name = getattr(eff, "name", str(getattr(eff, "effect_type", "Status")))
+                dur = getattr(eff, "duration_remaining", getattr(eff, "duration", 0.0))
+                icon = getattr(eff, "icon", "✨")
+                effects_strs.append(f"{icon} {name} ({dur:.1f}s)")
+            if effects_strs:
+                self.lbl_creep_effects.setText(
+                    f"🔮 Aktive Statuseffekte: {' • '.join(effects_strs)}"
+                )
+                self.lbl_creep_effects.setStyleSheet(
+                    "color: #FFD54F; font-size: 12px; font-weight: bold;"
                 )
             else:
-                special_desc.append(f"Regeneration (+{creep.regen_per_second:.0f}/s HP)")
-        if creep.is_boss:
-            special_desc.append("Immense Lebenskraft")
-        self.lbl_creep_special.setText(
-            f"✨ Besonderheit: {', '.join(special_desc) if special_desc else 'Standard'}"
-        )
-
-        effects_strs = []
-        for eff in creep.active_effects:
-            effects_strs.append(f"{eff.icon} {eff.effect_type.name} ({eff.duration:.1f}s)")
-        if effects_strs:
-            self.lbl_creep_effects.setText(f"🔮 Aktive Statuseffekte: {' • '.join(effects_strs)}")
-            self.lbl_creep_effects.setStyleSheet(
-                "color: #FFD54F; font-size: 12px; font-weight: bold;"
-            )
-        else:
-            self.lbl_creep_effects.setText("🔮 Aktive Statuseffekte: Keine")
-            self.lbl_creep_effects.setStyleSheet(
-                "color: #91A0C3; font-size: 12px; font-style: italic;"
-            )
+                self.lbl_creep_effects.setText("🔮 Aktive Statuseffekte: Keine")
+                self.lbl_creep_effects.setStyleSheet(
+                    "color: #91A0C3; font-size: 12px; font-style: italic;"
+                )
+        except (AttributeError, KeyError, TypeError, ValueError) as err:
+            logger.debug("Exception updating creep inspector: %s", err)
 
     def _zoom_step(self, factor: float) -> None:
         if self.engine:

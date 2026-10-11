@@ -24,6 +24,14 @@ class StatusEffect:
     icon: str = "🔥"
     color: tuple[int, int, int] = (255, 100, 30)
 
+    @property
+    def duration(self) -> float:
+        return self.duration_remaining
+
+    @property
+    def effect_type(self) -> "StatusEffect":
+        return self
+
 
 @dataclass
 class Creep:
@@ -51,6 +59,11 @@ class Creep:
     @property
     def is_alive(self) -> bool:
         return self.hp > 0.0
+
+    @property
+    def current_health(self) -> float:
+        """Alias for hp."""
+        return self.hp
 
     @property
     def is_burning(self) -> bool:

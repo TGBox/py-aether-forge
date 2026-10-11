@@ -2,7 +2,8 @@
 
 ## SemVer v1.1.0
 
-- 2026-10-11 (6d540bc): feat(speed): add new game speed and pause options, feat(ui): add new enemy inspector with clickable creatures, feat(ui): add status effects on enemies, feat(ui): add better visuals for tower attacks, feat(enemies): add new enemy types, feat(level): add option to get double aether when not selecting platform between levels, fix(game): allow for endless building in either direction
+- 2026-10-11 (e6044d0): fix(crash)!: fix gamecrash caused by enemy stat access, fix(towers): fusion upgrades are now working
+- 2026-10-11 (f89617b): feat(speed): add new game speed and pause options, feat(ui): add new enemy inspector with clickable creatures, feat(ui): add status effects on enemies, feat(ui): add better visuals for tower attacks, feat(enemies): add new enemy types, feat(level): add option to get double aether when not selecting platform between levels, fix(game): allow for endless building in either direction
 
 ## SemVer v1.0.0
 

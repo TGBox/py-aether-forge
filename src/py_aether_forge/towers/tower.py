@@ -48,6 +48,7 @@ class Tower:
         self.element = new_element
         self.damage *= 1.6
         self.range_radius *= 1.15
+        self.cost += 120
 
     def attack_target(self, target: Creep) -> None:
         """Applies direct damage and elemental status debuffs."""
@@ -56,15 +57,33 @@ class Tower:
         # Apply elemental effects
         if self.element == ElementType.FIRE:
             target.apply_effect(
-                StatusEffect(name="Burn", duration_remaining=3.0, dps=self.damage * 0.2)
+                StatusEffect(
+                    name="Burn",
+                    duration_remaining=3.0,
+                    dps=self.damage * 0.2,
+                    icon="🔥",
+                    color=(255, 100, 30),
+                )
             )
         elif self.element == ElementType.ICE:
             target.apply_effect(
-                StatusEffect(name="Chill", duration_remaining=2.5, slow_multiplier=0.6)
+                StatusEffect(
+                    name="Chill",
+                    duration_remaining=2.5,
+                    slow_multiplier=0.6,
+                    icon="❄️",
+                    color=(100, 220, 255),
+                )
             )
         elif self.element == ElementType.NATURE:
             target.apply_effect(
-                StatusEffect(name="Poison", duration_remaining=4.0, dps=self.damage * 0.15)
+                StatusEffect(
+                    name="Poison",
+                    duration_remaining=4.0,
+                    dps=self.damage * 0.15,
+                    icon="🌿",
+                    color=(60, 230, 110),
+                )
             )
         elif self.element == ElementType.FROSTFIRE:
             target.apply_effect(
@@ -73,6 +92,60 @@ class Tower:
                     duration_remaining=3.0,
                     dps=self.damage * 0.3,
                     slow_multiplier=0.5,
+                    icon="💠",
+                    color=(255, 140, 230),
+                )
+            )
+        elif self.element == ElementType.PLASMA:
+            target.apply_effect(
+                StatusEffect(
+                    name="Plasma-Brand",
+                    duration_remaining=3.5,
+                    dps=self.damage * 0.35,
+                    icon="⚡",
+                    color=(240, 110, 255),
+                )
+            )
+        elif self.element == ElementType.STEAM:
+            target.apply_effect(
+                StatusEffect(
+                    name="Dampf-Verbrühung",
+                    duration_remaining=3.0,
+                    dps=self.damage * 0.25,
+                    slow_multiplier=0.75,
+                    icon="💨",
+                    color=(220, 235, 250),
+                )
+            )
+        elif self.element == ElementType.GLACIER_ROOT:
+            target.apply_effect(
+                StatusEffect(
+                    name="Eiswurzel-Starre",
+                    duration_remaining=2.5,
+                    slow_multiplier=0.4,
+                    icon="🌿",
+                    color=(110, 245, 210),
+                )
+            )
+        elif self.element == ElementType.ASTRAL_SPORE:
+            target.apply_effect(
+                StatusEffect(
+                    name="Astral-Zersetzung",
+                    duration_remaining=4.0,
+                    dps=self.damage * 0.25,
+                    icon="✨",
+                    color=(200, 100, 255),
+                )
+            )
+        elif self.element == ElementType.VOID_CHILL:
+            target.apply_effect(
+                StatusEffect(
+                    name="Leerenfrost",
+                    duration_remaining=3.0,
+                    slow_multiplier=0.5,
+                    dps=self.damage * 0.15,
+                    icon="❄️",
+                    color=(160, 210, 255),
                 )
             )
 
