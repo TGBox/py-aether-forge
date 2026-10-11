@@ -1,6 +1,6 @@
 [project]
 name = "py_aether_forge"
-version = "1.1.0"
+version = "1.2.0"
 description = "A py-game tower defence game in hommage to the old warcraft 3 td maps - with a new twist."
 requires-python = ">=3.11"
 license = { text = "MIT" }
