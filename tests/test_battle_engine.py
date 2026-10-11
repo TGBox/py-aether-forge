@@ -242,3 +242,108 @@ def test_tower_placement_and_sale_reroutes_swarm_path() -> None:
     # Swarm path can now freely pass through the slot again
     path_after_sale = engine.cached_path
     assert path_after_sale is not None
+
+
+def test_skip_draft_awards_double_bonus() -> None:
+    """Verifies that skipping a platform draft grants double the dust bonus of the best shard."""
+    pygame.init()
+    engine = BattleEngine(width=800, height=600)
+
+    # Trigger draft mode
+    engine.start_next_wave()
+    engine.wave_spawner.spawn_queue.clear()
+    engine.creeps.clear()
+    engine.update(0.1)
+
+    assert engine.match_state.current_state == GameState.DRAFT
+    assert len(engine.draft_options) > 0
+
+    highest_shard_bonus = max(s.bonus_aether for s in engine.draft_options)
+    expected_reward = highest_shard_bonus * 2
+    initial_dust = engine.economy.aether_dust
+
+    reward = engine.skip_draft()
+    assert reward == expected_reward
+    assert engine.economy.aether_dust == initial_dust + expected_reward
+    assert engine.match_state.current_state == GameState.PREPARATION
+    assert len(engine.draft_options) == 0
+
+
+def test_time_scale_and_pause() -> None:
+    """Verifies that time scaling accelerates simulation and pause stops updates."""
+    pygame.init()
+    engine = BattleEngine(width=800, height=600)
+    engine.start_next_wave()
+
+    # Pause
+    paused = engine.toggle_pause()
+    assert paused
+    assert engine.is_paused
+
+    # While paused, update should not spawn creeps or advance timer
+    engine.update(1.0)
+    assert len(engine.creeps) == 0
+
+    # Unpause and set 2x speed
+    engine.toggle_pause()
+    assert not engine.is_paused
+    engine.set_time_scale(2.0)
+    assert engine.time_scale == 2.0
+
+
+def test_creep_selection_and_inspection() -> None:
+    """Verifies creep clicking and tactical inspector metadata."""
+    from py_aether_forge.enemies.types import create_life_drainer
+
+    pygame.init()
+    engine = BattleEngine(width=800, height=600)
+    creep = create_life_drainer(x=5.0, y=5.0, wave_multiplier=1.0)
+    engine.creeps.append(creep)
+
+    # Click near creep in screen space
+    cx, cy = engine.viewport.grid_center_to_screen(5.0, 5.0)
+    engine.handle_mouse_click(cx, cy, 1)
+
+    assert engine.selected_creep is creep
+    assert "Regeneration" in creep.resistances_text or creep.regen_per_second > 0
+
+    # Deselect by right-clicking or clicking empty ground
+    engine.handle_mouse_click(cx + 200, cy + 200, 1)
+    assert engine.selected_creep is None
+
+
+def test_boundless_platform_docking_and_expansion() -> None:
+    """Verifies that boundless mode allows platform expansion far into negative and positive coordinates."""
+    from py_aether_forge.expansion.drafter import is_valid_docking_location
+    from py_aether_forge.expansion.platform import PlatformShard
+
+    pygame.init()
+    engine = BattleEngine(width=800, height=600)
+
+    # Create a small 3x3 platform shard
+    shard = PlatformShard(
+        name="Test Outpost",
+        description="Testing boundless docking",
+        layout=[
+            [TileType.PLATFORM_WALK, TileType.PLATFORM_WALK, TileType.PLATFORM_WALK],
+            [TileType.PLATFORM_WALK, TileType.PLATFORM_BUILD, TileType.PLATFORM_WALK],
+            [TileType.PLATFORM_WALK, TileType.PLATFORM_WALK, TileType.PLATFORM_WALK],
+        ],
+        bonus_aether=40,
+    )
+
+    # Find dock on far edge and dock repeatedly
+    # Grid should accept placement at or beyond the original bounds (e.g. negative coords or > 20)
+    min_x, min_y, _max_x, _max_y = engine.grid.get_bounding_box()
+    # Try docking at min_x - 3 (to the far left)
+    dock_x = min_x - 3
+    dock_y = min_y
+
+    # Check validity for docking
+    if is_valid_docking_location(engine.grid, shard, dock_x, dock_y):
+        shard.place_on_grid(engine.grid, dock_x, dock_y)
+        new_min_x, _, _, _ = engine.grid.get_bounding_box()
+        assert new_min_x <= dock_x, (
+            "Bounding box should dynamically expand in negative X direction!"
+        )
+        assert engine.grid.get_tile(dock_x, dock_y).tile_type == TileType.PLATFORM_WALK

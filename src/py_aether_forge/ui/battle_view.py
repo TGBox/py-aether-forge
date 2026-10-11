@@ -121,7 +121,7 @@ class BattleViewWidget(QWidget):
             core_health_bonus=save_data.core_health_bonus,
         )
         self.pygame_surface = pygame.Surface((w, h))
-        self.engine.viewport.center_on_grid(w, h, self.engine.grid.width, self.engine.grid.height)
+        self.engine.viewport.center_on_grid(w, h, self.engine.grid)
         self._last_draft_wave = -1
         self.timer.start(16)
         self._update_hud_display()
@@ -164,6 +164,31 @@ class BattleViewWidget(QWidget):
         top_layout.addWidget(self.lbl_shards)
 
         top_layout.addStretch()
+
+        # Speed controls (Pause, 1x, 2x, 3x)
+        self.btn_pause = QPushButton("⏸ Pause (P)")
+        self.btn_pause.setToolTip("Zeit anhalten / fortsetzen (Taste P)")
+        self.btn_speed_1x = QPushButton("1x (1)")
+        self.btn_speed_1x.setToolTip("Normale Spielgeschwindigkeit (Taste 1)")
+        self.btn_speed_2x = QPushButton("2x (2)")
+        self.btn_speed_2x.setToolTip("Doppelte Spielgeschwindigkeit (Taste 2)")
+        self.btn_speed_3x = QPushButton("3x (3)")
+        self.btn_speed_3x.setToolTip("Dreifache Spielgeschwindigkeit (Taste 3)")
+
+        for btn in (self.btn_pause, self.btn_speed_1x, self.btn_speed_2x, self.btn_speed_3x):
+            btn.setStyleSheet("""
+                QPushButton {
+                    background: #1C2338; color: #82DCFF; border: 1px solid #4A5B82;
+                    font-weight: bold; padding: 5px 8px; border-radius: 4px; font-size: 12px;
+                }
+                QPushButton:hover { background: #2A3654; }
+            """)
+            top_layout.addWidget(btn)
+
+        self.btn_pause.clicked.connect(self._toggle_pause)
+        self.btn_speed_1x.clicked.connect(lambda: self._set_speed(1.0))
+        self.btn_speed_2x.clicked.connect(lambda: self._set_speed(2.0))
+        self.btn_speed_3x.clicked.connect(lambda: self._set_speed(3.0))
 
         # Camera controls (Zoom & Center)
         self.btn_zoom_out = QPushButton("➖")
@@ -285,13 +310,47 @@ class BattleViewWidget(QWidget):
         """)
         self.btn_rotate_shard.clicked.connect(self._on_rotate_shard)
         draft_actions_row.addWidget(self.btn_rotate_shard)
+
+        self.btn_skip_draft = QPushButton("⏭ Auf Plattform verzichten (Doppelter Bonus)")
+        self.btn_skip_draft.setToolTip(
+            "Verzichte auf den Plattform-Bau und erhalte stattdessen den doppelten Äther-Bonus der besten Scholle!"
+        )
+        self.btn_skip_draft.setStyleSheet("""
+            QPushButton {
+                background: #3A2A10;
+                color: #FFD54F;
+                border: 1px solid #FFC107;
+                border-radius: 6px;
+                padding: 6px 16px;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton:hover { background: #553E17; }
+        """)
+        self.btn_skip_draft.clicked.connect(self._on_skip_draft)
+        draft_actions_row.addWidget(self.btn_skip_draft)
+
         draft_actions_row.addStretch()
         self.draft_vlayout.addLayout(draft_actions_row)
 
         main_layout.addWidget(self.draft_container)
         self.draft_container.hide()
 
-        # 4. Inspector Panel (Appears when a tower is selected)
+        # 4. Creep Inspector Panel (Appears when a creep is clicked/inspected)
+        self.creep_inspector_panel = QFrame()
+        self.creep_inspector_panel.setStyleSheet("""
+            QFrame {
+                background-color: rgba(22, 16, 28, 0.95);
+                border: 2px solid #FF7043;
+                border-radius: 8px;
+                padding: 8px 14px;
+            }
+        """)
+        self._setup_creep_inspector_ui()
+        main_layout.addWidget(self.creep_inspector_panel)
+        self.creep_inspector_panel.hide()
+
+        # 5. Inspector Panel (Appears when a tower is selected)
         self.inspector_panel = QFrame()
         self.inspector_panel.setStyleSheet("""
             QFrame {
@@ -305,7 +364,7 @@ class BattleViewWidget(QWidget):
         main_layout.addWidget(self.inspector_panel)
         self.inspector_panel.hide()
 
-        # 5. Build Bar (Visible during standard build/combat phases)
+        # 6. Build Bar (Visible during standard build/combat phases)
         self.build_bar = QFrame()
         self.build_bar.setStyleSheet("""
             QFrame {
@@ -599,11 +658,14 @@ class BattleViewWidget(QWidget):
         self.lbl_aether.setText(f"✨ Äther: {eco.aether_dust}")
         self.lbl_shards.setText(f"💎 Splitter: +{eco.astral_shards}")
 
+        self._update_speed_buttons_style()
+
         # State Handling
         if ms.current_state == GameState.DRAFT:
             self.lbl_wave.setText("✦ Rundenbelohnung: Wähle eine Scholle! ✦")
             self.btn_start_wave.setEnabled(False)
             self.inspector_panel.hide()
+            self.creep_inspector_panel.hide()
             self.build_bar.hide()
             self._check_and_show_draft()
         else:
@@ -618,12 +680,19 @@ class BattleViewWidget(QWidget):
                 self.lbl_wave.setText("💀 Weltenkern Zerstört (Game Over) 💀")
                 self.btn_start_wave.setEnabled(False)
 
-            # Inspector vs Build Bar
-            if self.engine.selected_tower or self.engine.selected_barrier:
+            # Inspector vs Build Bar vs Creep Inspector
+            if self.engine.selected_creep:
+                self.build_bar.hide()
+                self.inspector_panel.hide()
+                self._update_creep_inspector()
+                self.creep_inspector_panel.show()
+            elif self.engine.selected_tower or self.engine.selected_barrier:
+                self.creep_inspector_panel.hide()
                 self.build_bar.hide()
                 self._update_inspector()
                 self.inspector_panel.show()
             else:
+                self.creep_inspector_panel.hide()
                 self.inspector_panel.hide()
                 self.build_bar.show()
 
@@ -664,6 +733,11 @@ class BattleViewWidget(QWidget):
 
         if not self.engine or not self.engine.draft_options:
             return
+
+        max_bonus = max((s.bonus_aether for s in self.engine.draft_options), default=30)
+        self.btn_skip_draft.setText(
+            f"⏭ Auf Plattform verzichten (Doppelter Bonus: +{max_bonus * 2} ✨)"
+        )
 
         for idx, shard in enumerate(self.engine.draft_options):
             card = QFrame()
@@ -845,6 +919,184 @@ class BattleViewWidget(QWidget):
             self.engine.fuse_selected_tower(second_elem)
             self._update_inspector()
 
+    def _on_skip_draft(self) -> None:
+        """Forgoes platform shard drafting and claims double dust bonus instead."""
+        if self.engine:
+            self.engine.skip_draft()
+            self._update_hud_display()
+
+    def _toggle_pause(self) -> None:
+        if self.engine:
+            self.engine.toggle_pause()
+            self._update_speed_buttons_style()
+            self._update_hud_display()
+
+    def _set_speed(self, scale: float) -> None:
+        if self.engine:
+            self.engine.set_time_scale(scale)
+            if self.engine.is_paused:
+                self.engine.is_paused = False
+            self._update_speed_buttons_style()
+            self._update_hud_display()
+
+    def _update_speed_buttons_style(self) -> None:
+        if not self.engine:
+            return
+        is_paused = self.engine.is_paused
+        speed = self.engine.time_scale
+
+        active_style = (
+            "background: #25587D; color: #FFD54F; border: 1px solid #FFCD3C; "
+            "font-weight: bold; padding: 5px 8px; border-radius: 4px; font-size: 12px;"
+        )
+        pause_active_style = (
+            "background: #5A1E24; color: #FFAAA0; border: 1px solid #E53935; "
+            "font-weight: bold; padding: 5px 8px; border-radius: 4px; font-size: 12px;"
+        )
+        normal_style = (
+            "background: #1C2338; color: #82DCFF; border: 1px solid #4A5B82; "
+            "font-weight: bold; padding: 5px 8px; border-radius: 4px; font-size: 12px;"
+        )
+
+        self.btn_pause.setStyleSheet(pause_active_style if is_paused else normal_style)
+        self.btn_pause.setText("▶ Weiter (P)" if is_paused else "⏸ Pause (P)")
+
+        self.btn_speed_1x.setStyleSheet(
+            active_style if (not is_paused and abs(speed - 1.0) < 0.1) else normal_style
+        )
+        self.btn_speed_2x.setStyleSheet(
+            active_style if (not is_paused and abs(speed - 2.0) < 0.1) else normal_style
+        )
+        self.btn_speed_3x.setStyleSheet(
+            active_style if (not is_paused and abs(speed - 3.0) < 0.1) else normal_style
+        )
+
+    def _setup_creep_inspector_ui(self) -> None:
+        layout = QVBoxLayout(self.creep_inspector_panel)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(6)
+
+        # Header row: Icon & Name, Boss tag, Close
+        header_row = QHBoxLayout()
+        self.lbl_creep_name = QLabel("👾 Gegner-Information")
+        self.lbl_creep_name.setStyleSheet("font-size: 16px; font-weight: bold; color: #FF7043;")
+        header_row.addWidget(self.lbl_creep_name)
+
+        self.lbl_creep_type_badge = QLabel("Kategorie")
+        self.lbl_creep_type_badge.setStyleSheet(
+            "background: #2A1810; color: #FFAB91; border: 1px solid #FF7043; "
+            "border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: bold;"
+        )
+        header_row.addWidget(self.lbl_creep_type_badge)
+
+        header_row.addStretch()
+
+        btn_close = QPushButton("✕ Abwählen")
+        btn_close.setStyleSheet("""
+            QPushButton {
+                background: #2E3654;
+                color: #DDD;
+                border: 1px solid #66759E;
+                padding: 4px 10px;
+                border-radius: 4px;
+            }
+            QPushButton:hover { background: #404B75; }
+        """)
+        btn_close.clicked.connect(self._deselect_creep)
+        header_row.addWidget(btn_close)
+        layout.addLayout(header_row)
+
+        # Stats row: HP, Speed, Bounty
+        stats_row = QHBoxLayout()
+        self.lbl_creep_hp = QLabel("❤️ Leben: -- / --")
+        self.lbl_creep_hp.setStyleSheet("color: #FF5252; font-weight: bold; font-size: 13px;")
+        stats_row.addWidget(self.lbl_creep_hp)
+
+        self.lbl_creep_speed = QLabel("⚡ Tempo: --")
+        self.lbl_creep_speed.setStyleSheet("color: #82DCFF; font-weight: bold; font-size: 13px;")
+        stats_row.addWidget(self.lbl_creep_speed)
+
+        self.lbl_creep_bounty = QLabel("✨ Kopfgeld: +--")
+        self.lbl_creep_bounty.setStyleSheet("color: #FFD54F; font-weight: bold; font-size: 13px;")
+        stats_row.addWidget(self.lbl_creep_bounty)
+
+        stats_row.addStretch()
+        layout.addLayout(stats_row)
+
+        # Tactical strengths & weaknesses
+        tactical_row = QHBoxLayout()
+        self.lbl_creep_weakness = QLabel("⚡ Schwächen: --")
+        self.lbl_creep_weakness.setStyleSheet("color: #81C784; font-size: 12px; font-weight: bold;")
+        tactical_row.addWidget(self.lbl_creep_weakness)
+
+        self.lbl_creep_resistance = QLabel("🛡 Resistenzen: --")
+        self.lbl_creep_resistance.setStyleSheet(
+            "color: #E57373; font-size: 12px; font-weight: bold;"
+        )
+        tactical_row.addWidget(self.lbl_creep_resistance)
+
+        self.lbl_creep_special = QLabel("✨ Besonderheit: --")
+        self.lbl_creep_special.setStyleSheet("color: #BA68C8; font-size: 12px; font-weight: bold;")
+        tactical_row.addWidget(self.lbl_creep_special)
+
+        tactical_row.addStretch()
+        layout.addLayout(tactical_row)
+
+        # Status effects row
+        self.lbl_creep_effects = QLabel("🔮 Aktive Statuseffekte: Keine")
+        self.lbl_creep_effects.setStyleSheet("color: #E2E8F0; font-size: 12px; font-style: italic;")
+        layout.addWidget(self.lbl_creep_effects)
+
+    def _deselect_creep(self) -> None:
+        if self.engine:
+            self.engine.selected_creep = None
+        self._update_hud_display()
+
+    def _update_creep_inspector(self) -> None:
+        if not self.engine or not self.engine.selected_creep:
+            return
+        creep = self.engine.selected_creep
+        boss_prefix = "👑 BOSS: " if creep.is_boss else ""
+        self.lbl_creep_name.setText(f"{boss_prefix}{creep.name}")
+        self.lbl_creep_type_badge.setText(creep.armor_type.name)
+
+        self.lbl_creep_hp.setText(
+            f"❤️ Leben: {max(0, int(creep.current_health))} / {int(creep.max_health)}"
+        )
+        self.lbl_creep_speed.setText(f"⚡ Tempo: {creep.speed:.1f}")
+        self.lbl_creep_bounty.setText(f"✨ Kopfgeld: +{creep.bounty}")
+
+        self.lbl_creep_weakness.setText(f"⚡ Schwächen: {creep.weaknesses_text}")
+        self.lbl_creep_resistance.setText(f"🛡 Resistenzen: {creep.resistances_text}")
+
+        special_desc = []
+        if creep.regen_per_second > 0:
+            if creep.is_burning:
+                special_desc.append(
+                    f"Regeneration (+{creep.regen_per_second:.0f}/s) BLOCKIERT durch Verbrennung!"
+                )
+            else:
+                special_desc.append(f"Regeneration (+{creep.regen_per_second:.0f}/s HP)")
+        if creep.is_boss:
+            special_desc.append("Immense Lebenskraft")
+        self.lbl_creep_special.setText(
+            f"✨ Besonderheit: {', '.join(special_desc) if special_desc else 'Standard'}"
+        )
+
+        effects_strs = []
+        for eff in creep.active_effects:
+            effects_strs.append(f"{eff.icon} {eff.effect_type.name} ({eff.duration:.1f}s)")
+        if effects_strs:
+            self.lbl_creep_effects.setText(f"🔮 Aktive Statuseffekte: {' • '.join(effects_strs)}")
+            self.lbl_creep_effects.setStyleSheet(
+                "color: #FFD54F; font-size: 12px; font-weight: bold;"
+            )
+        else:
+            self.lbl_creep_effects.setText("🔮 Aktive Statuseffekte: Keine")
+            self.lbl_creep_effects.setStyleSheet(
+                "color: #91A0C3; font-size: 12px; font-style: italic;"
+            )
+
     def _zoom_step(self, factor: float) -> None:
         if self.engine:
             cx, cy = self.width() // 2, self.height() // 2
@@ -855,9 +1107,7 @@ class BattleViewWidget(QWidget):
         if self.engine:
             w, h = max(1, self.width()), max(1, self.height())
             self.engine.viewport.zoom = 1.0
-            self.engine.viewport.center_on_grid(
-                w, h, self.engine.grid.width, self.engine.grid.height
-            )
+            self.engine.viewport.center_on_grid(w, h, self.engine.grid)
             self.update()
 
     def _on_rotate_shard(self) -> None:
@@ -935,6 +1185,14 @@ class BattleViewWidget(QWidget):
             self._on_rotate_shard()
         elif event.key() == Qt.Key.Key_C:
             self._center_camera()
+        elif event.key() == Qt.Key.Key_P:
+            self._toggle_pause()
+        elif event.key() == Qt.Key.Key_1:
+            self._set_speed(1.0)
+        elif event.key() == Qt.Key.Key_2:
+            self._set_speed(2.0)
+        elif event.key() == Qt.Key.Key_3:
+            self._set_speed(3.0)
         super().keyPressEvent(event)
 
     def resizeEvent(self, event) -> None:

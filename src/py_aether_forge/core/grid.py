@@ -30,9 +30,15 @@ class Tile:
 class Grid:
     """The 2D coordinate grid managing tiles, bounds, and adjacency."""
 
-    def __init__(self, width: int = 20, height: int = 15) -> None:
+    def __init__(
+        self,
+        width: int = 20,
+        height: int = 15,
+        boundless: bool = False,
+    ) -> None:
         self.width: int = width
         self.height: int = height
+        self.boundless: bool = boundless
         self._tiles: dict[tuple[int, int], Tile] = {
             (x, y): Tile(x=x, y=y, tile_type=TileType.VOID)
             for x in range(width)
@@ -40,7 +46,10 @@ class Grid:
         }
 
     def in_bounds(self, x: int, y: int) -> bool:
-        """Returns True if the coordinates are within the grid bounds."""
+        """Returns True if the coordinates are within bounds (unlimited in boundless mode)."""
+        if self.boundless:
+            # Boundless astral expanse allows expansive growth up to 300 tiles in any direction
+            return -300 <= x <= 300 and -300 <= y <= 300
         return 0 <= x < self.width and 0 <= y < self.height
 
     def get_tile(self, x: int, y: int) -> Tile:
@@ -58,10 +67,27 @@ class Grid:
     ) -> None:
         """Sets the type and optional rune affinity of a tile."""
         if self.in_bounds(x, y):
+            if (x, y) not in self._tiles:
+                self._tiles[(x, y)] = Tile(x=x, y=y, tile_type=tile_type)
             tile = self._tiles[(x, y)]
             tile.tile_type = tile_type
             if rune_affinity is not None:
                 tile.rune_affinity = rune_affinity
+
+    def non_void_tiles(self) -> list[Tile]:
+        """Returns all materialized platform tiles (ignoring the abyss)."""
+        return [t for t in self._tiles.values() if t.tile_type != TileType.VOID]
+
+    def get_bounding_box(self) -> tuple[int, int, int, int]:
+        """Returns (min_x, min_y, max_x, max_y) encompassing all placed platform tiles."""
+        active = self.non_void_tiles()
+        if not active:
+            return 0, 0, self.width - 1, self.height - 1
+        min_x = min(t.x for t in active)
+        min_y = min(t.y for t in active)
+        max_x = max(t.x for t in active)
+        max_y = max(t.y for t in active)
+        return min_x, min_y, max_x, max_y
 
     def is_walkable(self, x: int, y: int) -> bool:
         """Checks if a tile can be traversed by enemy swarms.

@@ -5,8 +5,11 @@ from dataclasses import dataclass
 
 from py_aether_forge.enemies.creep import Creep
 from py_aether_forge.enemies.types import (
+    create_aether_mite,
     create_astral_titan,
     create_chaos_golem,
+    create_frost_breaker,
+    create_life_drainer,
     create_swarm_runner,
     create_void_wisp,
 )
@@ -34,27 +37,48 @@ class WaveSpawner:
         queue: list[SpawnEntry] = []
 
         if wave_number % 10 == 0:
-            # Boss wave
+            # Major Boss wave
             queue.append(SpawnEntry(factory=create_astral_titan, delay_before_spawn=1.0))
             for _ in range(4):
                 queue.append(SpawnEntry(factory=create_chaos_golem, delay_before_spawn=0.8))
+            for _ in range(3):
+                queue.append(SpawnEntry(factory=create_life_drainer, delay_before_spawn=0.9))
         elif wave_number % 5 == 0:
-            # Swarm rush
-            for _ in range(16):
-                queue.append(SpawnEntry(factory=create_swarm_runner, delay_before_spawn=0.35))
+            # Swarm rush wave
+            for _ in range(14):
+                queue.append(SpawnEntry(factory=create_aether_mite, delay_before_spawn=0.25))
+            for _ in range(8):
+                queue.append(SpawnEntry(factory=create_swarm_runner, delay_before_spawn=0.4))
         else:
-            # Standard wave mix
-            runner_count = 6 + wave_number
+            # Standard wave mix with dynamic variety
+            runner_count = 5 + wave_number
             for _ in range(runner_count):
-                queue.append(SpawnEntry(factory=create_swarm_runner, delay_before_spawn=0.6))
+                queue.append(SpawnEntry(factory=create_swarm_runner, delay_before_spawn=0.55))
+
+            if wave_number >= 2:
+                mite_count = 3 + wave_number
+                for _ in range(mite_count):
+                    queue.append(SpawnEntry(factory=create_aether_mite, delay_before_spawn=0.3))
+
             if wave_number >= 3:
                 golem_count = 1 + wave_number // 3
                 for _ in range(golem_count):
-                    queue.append(SpawnEntry(factory=create_chaos_golem, delay_before_spawn=1.2))
+                    queue.append(SpawnEntry(factory=create_chaos_golem, delay_before_spawn=1.1))
+
             if wave_number >= 4:
                 wisp_count = 2 + wave_number // 2
                 for _ in range(wisp_count):
-                    queue.append(SpawnEntry(factory=create_void_wisp, delay_before_spawn=0.8))
+                    queue.append(SpawnEntry(factory=create_void_wisp, delay_before_spawn=0.75))
+
+            if wave_number >= 6:
+                drainer_count = 1 + (wave_number - 5) // 2
+                for _ in range(drainer_count):
+                    queue.append(SpawnEntry(factory=create_life_drainer, delay_before_spawn=1.0))
+
+            if wave_number >= 7:
+                frost_count = 1 + (wave_number - 6) // 2
+                for _ in range(frost_count):
+                    queue.append(SpawnEntry(factory=create_frost_breaker, delay_before_spawn=0.9))
 
         return queue
 

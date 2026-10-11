@@ -17,6 +17,7 @@ from py_aether_forge.expansion.drafter import PlatformDrafter, is_valid_docking_
 from py_aether_forge.expansion.platform import PlatformShard
 from py_aether_forge.render.audio import AudioManager
 from py_aether_forge.render.particles import ParticleSystem
+from py_aether_forge.render.projectiles import Projectile, spawn_tower_projectile
 from py_aether_forge.render.starfield import Starfield
 from py_aether_forge.render.viewport import Viewport
 from py_aether_forge.towers.elements import ElementType
@@ -45,15 +46,24 @@ class BattleEngine:
             core_health=20 + core_health_bonus,
         )
         self.match_state = MatchState()
-        self.grid = Grid(width=GRID_CONFIG.initial_cols, height=GRID_CONFIG.initial_rows)
+        self.grid = Grid(
+            width=GRID_CONFIG.initial_cols,
+            height=GRID_CONFIG.initial_rows,
+            boundless=True,
+        )
         self.wave_spawner = WaveSpawner()
         self.fusion_registry = FusionRegistry()
         self.drafter = PlatformDrafter()
+
+        # Time control
+        self.time_scale: float = 1.0
+        self.is_paused: bool = False
 
         # Rendering & audio
         self.viewport = Viewport()
         self.starfield = Starfield(width, height)
         self.particles = ParticleSystem()
+        self.projectiles: list[Projectile] = []
         self.audio = AudioManager()
 
         # Safely initialize fonts for rendering tactical feedback
@@ -72,6 +82,7 @@ class BattleEngine:
         # Selections & drafting state
         self.selected_tower: Tower | None = None
         self.selected_barrier: tuple[int, int] | None = None
+        self.selected_creep: Creep | None = None
         self.build_mode: str = "TOWER"  # "TOWER" or "BARRIER"
         self.warning_message: str = ""
         self.warning_timer: float = 0.0
@@ -82,7 +93,7 @@ class BattleEngine:
 
         self._setup_initial_arena()
         self._recalculate_swarm_path()
-        self.viewport.center_on_grid(width, height, self.grid.width, self.grid.height)
+        self.viewport.center_on_grid(width, height, self.grid)
 
     def _setup_initial_arena(self) -> None:
         """Constructs the initial floating platform with a central walkway and tower build foundations."""
@@ -349,6 +360,30 @@ class BattleEngine:
         self.audio.play("wave")
         return True
 
+    def set_time_scale(self, scale: float) -> None:
+        """Sets the tactical simulation speed multiplier (e.g. 1.0, 2.0, 3.0)."""
+        self.time_scale = max(0.0, scale)
+
+    def toggle_pause(self) -> bool:
+        """Toggles between paused and running tactical simulation."""
+        self.is_paused = not self.is_paused
+        return self.is_paused
+
+    def skip_draft(self) -> int:
+        """Forgoes drafting a platform shard and awards double the bonus of the best drafted shard."""
+        if self.match_state.current_state != GameState.DRAFT:
+            return 0
+
+        max_bonus = max((shard.bonus_aether for shard in self.draft_options), default=30)
+        double_bonus = max_bonus * 2
+        self.economy.add_aether(double_bonus)
+
+        self.selected_draft_shard = None
+        self.draft_options.clear()
+        self.match_state.complete_draft()
+        self.audio.play("wave")
+        return double_bonus
+
     def select_draft_shard(self, index: int) -> None:
         """Picks one of the drafted shards for grid placement."""
         if 0 <= index < len(self.draft_options):
@@ -387,14 +422,36 @@ class BattleEngine:
             if self.warning_timer == 0:
                 self.warning_message = ""
 
-        self.starfield.update(dt)
-        self.particles.update(dt)
+        # Pause freezes simulation and particle movement
+        if self.is_paused:
+            return
+
+        effective_dt = dt * self.time_scale
+
+        self.starfield.update(effective_dt)
+        self.particles.update(effective_dt)
+
+        # 0. Update animated flying projectiles
+        remaining_projectiles: list[Projectile] = []
+        for proj in self.projectiles:
+            finished = proj.update(effective_dt)
+            if finished:
+                cx, cy = self.viewport.grid_center_to_screen(proj.target_x, proj.target_y)
+                self.particles.emit_burst(cx, cy, proj.color, count=8, speed=60.0)
+                self.audio.play("hit")
+            else:
+                remaining_projectiles.append(proj)
+        self.projectiles = remaining_projectiles
+
+        # Keep inspector creep selection in sync
+        if self.selected_creep is not None and not self.selected_creep.is_alive:
+            self.selected_creep = None
 
         if self.match_state.current_state == GameState.WAVE:
             p_pos, c_pos = self._get_portal_and_core_positions()
 
             # 1. Spawn creeps
-            new_creeps = self.wave_spawner.update(dt, (float(p_pos[0]), float(p_pos[1])))
+            new_creeps = self.wave_spawner.update(effective_dt, (float(p_pos[0]), float(p_pos[1])))
             for nc in new_creeps:
                 self.creeps.append(nc)
                 if self.cached_path:
@@ -403,13 +460,15 @@ class BattleEngine:
             # 2. Update creeps movement along cached path
             remaining_creeps: list[Creep] = []
             for creep in self.creeps:
-                creep.update(dt)
+                creep.update(effective_dt)
                 if not creep.is_alive:
                     # Bounty reward
                     self.economy.add_aether(creep.bounty)
                     cx, cy = self.viewport.grid_center_to_screen(creep.x, creep.y)
                     self.particles.emit_burst(cx, cy, (255, 215, 80), count=10)
                     self.audio.play("hit")
+                    if creep is self.selected_creep:
+                        self.selected_creep = None
                     continue
 
                 path = self.creep_paths.get(id(creep))
@@ -418,7 +477,7 @@ class BattleEngine:
                     dx = target_wpt[0] - creep.x
                     dy = target_wpt[1] - creep.y
                     dist = math.hypot(dx, dy)
-                    step = creep.speed * dt
+                    step = creep.speed * effective_dt
 
                     if dist <= step:
                         creep.x = float(target_wpt[0])
@@ -431,6 +490,8 @@ class BattleEngine:
                             self.audio.play("leak")
                             cx, cy = self.viewport.grid_center_to_screen(c_pos[0], c_pos[1])
                             self.particles.emit_burst(cx, cy, (255, 60, 60), count=20)
+                            if creep is self.selected_creep:
+                                self.selected_creep = None
                             continue
                     else:
                         creep.x += (dx / dist) * step
@@ -448,18 +509,17 @@ class BattleEngine:
 
             # 3. Towers acquire and attack
             for tower in self.towers:
-                tower.update(dt)
+                tower.update(effective_dt)
                 hit_target = tower.acquire_and_fire(self.creeps)
                 if hit_target is not None:
-                    # Emit beam / tracer particles
+                    # Spawn flying elemental projectile
+                    proj = spawn_tower_projectile(tower, hit_target)
+                    self.projectiles.append(proj)
+
+                    # Muzzle spark
                     tx, ty = self.viewport.grid_center_to_screen(tower.x, tower.y)
-                    cx, cy = self.viewport.grid_center_to_screen(hit_target.x, hit_target.y)
-                    # Tracer spark mid-point
-                    mx = (tx + cx) / 2.0
-                    my = (ty + cy) / 2.0
-                    self.particles.emit_burst(mx, my, (255, 200, 100), count=4, speed=30.0)
-                    self.particles.emit_burst(cx, cy, (255, 120, 60), count=6, speed=60.0)
-                    self.audio.play("hit")
+                    self.particles.emit_burst(tx, ty, proj.color, count=4, speed=40.0)
+                    self.audio.play("shoot")
 
             # 4. Check wave completion -> transition to DRAFT
             if self.wave_spawner.is_wave_spawning_done() and len(self.creeps) == 0:
@@ -472,6 +532,23 @@ class BattleEngine:
         gx, gy = self.viewport.screen_to_grid(sx, sy)
 
         if button == 1:  # Left click
+            # Check if clicked on a creep first
+            clicked_creep = None
+            for creep in self.creeps:
+                if not creep.is_alive:
+                    continue
+                csx, csy = self.viewport.grid_center_to_screen(creep.x, creep.y)
+                hit_r = max(24.0, self.viewport.tile_size * 0.65 * creep.size_multiplier)
+                if math.hypot(sx - csx, sy - csy) <= hit_r:
+                    clicked_creep = creep
+                    break
+
+            if clicked_creep is not None:
+                self.selected_creep = clicked_creep
+                self.selected_tower = None
+                self.selected_barrier = None
+                return
+
             if (
                 self.match_state.current_state == GameState.DRAFT
                 and self.selected_draft_shard is not None
@@ -481,6 +558,9 @@ class BattleEngine:
 
             if self.match_state.current_state in (GameState.PREPARATION, GameState.WAVE):
                 tile = self.grid.get_tile(gx, gy)
+
+                # Deselect inspected creep if clicking ground/towers
+                self.selected_creep = None
 
                 # 1. Click on existing tower
                 clicked_tower = next((t for t in self.towers if t.x == gx and t.y == gy), None)
@@ -519,6 +599,7 @@ class BattleEngine:
                     self.selected_barrier = None
 
         elif button == 3:  # Right click: Quick demolish barrier or rotate draft shard / deselect
+            self.selected_creep = None
             if self.match_state.current_state == GameState.DRAFT and self.selected_draft_shard:
                 self.rotate_selected_draft_shard()
                 return
@@ -539,7 +620,8 @@ class BattleEngine:
         self.viewport.draw_grid(surface, self.grid, self.hover_tile)
         self.viewport.draw_path_telegraph(surface, self.cached_path)
         self.viewport.draw_towers(surface, self.towers, self.selected_tower)
-        self.viewport.draw_creeps(surface, self.creeps)
+        self.viewport.draw_projectiles(surface, self.projectiles)
+        self.viewport.draw_creeps(surface, self.creeps, self.selected_creep)
         self.particles.draw(surface)
 
         # Draw barrier ghost when hovering in BARRIER mode
