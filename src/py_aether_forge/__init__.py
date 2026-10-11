@@ -1,22 +1,11 @@
-import sys
+"""Die Äther-Schmiede - Astral Fantasy Tower Defense."""
 
-from PySide6.QtWidgets import QApplication, QMainWindow, QLabel
-from PySide6.QtCore import Qt
-
-
-
-
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("py-aether-forge")
-        self.resize(800, 600)
-        label = QLabel("Hallo aus py-aether-forge!", alignment=Qt.AlignmentFlag.AlignCenter)
-        self.setCentralWidget(label)
+from py_aether_forge.app import AetherForgeWindow, run_app
 
 
 def main() -> None:
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    """Console script entry point."""
+    run_app()
+
+
+__all__ = ["AetherForgeWindow", "main", "run_app"]
