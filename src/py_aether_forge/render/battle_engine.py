@@ -7,8 +7,10 @@ import pygame
 from py_aether_forge.config import GRID_CONFIG
 from py_aether_forge.core.economy import Economy
 from py_aether_forge.core.grid import Grid, TileType
-from py_aether_forge.core.pathfinding import find_path_astar
+from py_aether_forge.core.pathfinding import can_build_without_blocking, find_path_astar
 from py_aether_forge.core.state import GameState, MatchState
+
+BARRIER_COST: int = 20
 from py_aether_forge.core.wave_spawner import WaveSpawner
 from py_aether_forge.enemies.creep import Creep
 from py_aether_forge.expansion.drafter import PlatformDrafter, is_valid_docking_location
@@ -54,6 +56,14 @@ class BattleEngine:
         self.particles = ParticleSystem()
         self.audio = AudioManager()
 
+        # Safely initialize fonts for rendering tactical feedback
+        if not pygame.font.get_init():
+            pygame.font.init()
+        try:
+            self._warning_font: pygame.font.Font = pygame.font.SysFont("Segoe UI", 15, bold=True)
+        except (pygame.error, OSError):
+            self._warning_font = pygame.font.Font(None, 20)
+
         # Entities
         self.towers: list[Tower] = []
         self.creeps: list[Creep] = []
@@ -61,6 +71,10 @@ class BattleEngine:
 
         # Selections & drafting state
         self.selected_tower: Tower | None = None
+        self.selected_barrier: tuple[int, int] | None = None
+        self.build_mode: str = "TOWER"  # "TOWER" or "BARRIER"
+        self.warning_message: str = ""
+        self.warning_timer: float = 0.0
         self.hover_tile: tuple[int, int] | None = None
         self.draft_options: list[PlatformShard] = []
         self.selected_draft_shard: PlatformShard | None = None
@@ -70,23 +84,26 @@ class BattleEngine:
         self._recalculate_swarm_path()
 
     def _setup_initial_arena(self) -> None:
-        """Constructs the initial floating platform with a core and entry portal."""
-        # Middle row is walkway
+        """Constructs the initial floating platform with a central walkway and tower build foundations."""
         mid_y = self.grid.height // 2
         portal_x = 2
         core_x = self.grid.width - 3
 
-        # Path from portal to core
+        # Central direct walkway from portal to core
         for x in range(portal_x, core_x + 1):
             self.grid.set_tile(x, mid_y, TileType.PLATFORM_WALK)
 
         self.grid.set_tile(portal_x, mid_y, TileType.PORTAL)
         self.grid.set_tile(core_x, mid_y, TileType.CORE)
 
-        # Build slots above and below
+        # Tower foundation platforms above and below the central lane (2 rows on each side)
+        # When unoccupied, enemy swarms can traverse these tiles freely.
+        # Placing a tower or an aether wall obstructs that cell and creates a maze.
         for x in range(portal_x + 1, core_x):
+            self.grid.set_tile(x, mid_y - 2, TileType.PLATFORM_BUILD)
             self.grid.set_tile(x, mid_y - 1, TileType.PLATFORM_BUILD)
             self.grid.set_tile(x, mid_y + 1, TileType.PLATFORM_BUILD)
+            self.grid.set_tile(x, mid_y + 2, TileType.PLATFORM_BUILD)
 
     def _get_portal_and_core_positions(self) -> tuple[tuple[int, int], tuple[int, int]]:
         portals = self.grid.find_tiles_of_type(TileType.PORTAL)
@@ -101,7 +118,91 @@ class BattleEngine:
     def _recalculate_swarm_path(self) -> list[tuple[int, int]] | None:
         p_pos, c_pos = self._get_portal_and_core_positions()
         self.cached_path = find_path_astar(self.grid, start=p_pos, goal=c_pos)
+
+        # Re-route all active creeps dynamically to the core
+        for creep in self.creeps:
+            if not creep.is_alive:
+                continue
+            c_grid = (round(creep.x), round(creep.y))
+            new_path = find_path_astar(self.grid, start=c_grid, goal=c_pos)
+            if new_path:
+                self.creep_paths[id(creep)] = new_path
+
         return self.cached_path
+
+    def build_barrier(self, gx: int, gy: int) -> bool:
+        """Places an aether barrier wall on a walkable tile to divert swarms."""
+        if not self.grid.can_place_barrier(gx, gy):
+            return False
+        if not self.economy.can_afford(BARRIER_COST):
+            self.warning_message = "Nicht genügend Äther-Staub für Äther-Wand (20 ✨ benötigt)!"
+            self.warning_timer = 2.5
+            return False
+
+        # Blockade prevention check from portal to core
+        portal_pos, core_pos = self._get_portal_and_core_positions()
+        if not can_build_without_blocking(
+            self.grid, start=portal_pos, goal=core_pos, target_tile=(gx, gy)
+        ):
+            self.warning_message = (
+                "Aktion verweigert: Der Pfad zum Weltenkern darf nicht komplett versperrt werden!"
+            )
+            self.warning_timer = 3.0
+            self.audio.play("leak")
+            return False
+
+        # Check that active creeps won't be trapped
+        for creep in self.creeps:
+            if not creep.is_alive:
+                continue
+            creep_pos = (round(creep.x), round(creep.y))
+            if creep_pos == (gx, gy):
+                self.warning_message = (
+                    "Aktion verweigert: Eine Kreatur befindet sich auf diesem Feld!"
+                )
+                self.warning_timer = 2.0
+                return False
+            c_path = find_path_astar(
+                self.grid, start=creep_pos, goal=core_pos, blocked_tile=(gx, gy)
+            )
+            if c_path is None:
+                self.warning_message = (
+                    "Aktion verweigert: Eine aktive Kreatur würde eingesperrt werden!"
+                )
+                self.warning_timer = 3.0
+                self.audio.play("leak")
+                return False
+
+        self.economy.spend(BARRIER_COST)
+        tile = self.grid.get_tile(gx, gy)
+        tile.has_barrier = True
+        self.warning_message = ""
+        self.warning_timer = 0.0
+
+        cx, cy = self.viewport.grid_center_to_screen(gx, gy)
+        self.particles.emit_burst(cx, cy, (79, 195, 247), count=14, speed=80.0)
+        self.audio.play("shoot")
+
+        self._recalculate_swarm_path()
+        return True
+
+    def remove_barrier(self, gx: int, gy: int) -> bool:
+        """Demolishes an aether barrier wall and refunds 100% of dust cost (20 ✨)."""
+        if not self.grid.in_bounds(gx, gy):
+            return False
+        tile = self.grid.get_tile(gx, gy)
+        if not tile.has_barrier:
+            return False
+
+        tile.has_barrier = False
+        self.economy.add_aether(BARRIER_COST)
+
+        cx, cy = self.viewport.grid_center_to_screen(gx, gy)
+        self.particles.emit_burst(cx, cy, (255, 205, 60), count=12, speed=70.0)
+        self.audio.play("hit")
+
+        self._recalculate_swarm_path()
+        return True
 
     def start_next_wave(self) -> bool:
         """Starts the next combat wave if currently in preparation."""
@@ -124,9 +225,48 @@ class BattleEngine:
         fire_rate = spec.fire_rate if spec else 1.1
         range_radius = spec.range_radius if spec else 3.0
 
-        if not self.grid.is_buildable(gx, gy) or not self.economy.spend(cost):
+        if not self.grid.is_buildable(gx, gy):
+            return False
+        if not self.economy.can_afford(cost):
+            self.warning_message = "Nicht genügend Äther-Staub für diesen Turm!"
+            self.warning_timer = 2.5
             return False
 
+        # Blockade prevention check: placing a tower obstructs this cell for swarms
+        portal_pos, core_pos = self._get_portal_and_core_positions()
+        if not can_build_without_blocking(
+            self.grid, start=portal_pos, goal=core_pos, target_tile=(gx, gy)
+        ):
+            self.warning_message = (
+                "Aktion verweigert: Der Pfad zum Weltenkern darf nicht komplett versperrt werden!"
+            )
+            self.warning_timer = 3.0
+            self.audio.play("leak")
+            return False
+
+        # Check that active creeps won't be trapped
+        for creep in self.creeps:
+            if not creep.is_alive:
+                continue
+            creep_pos = (round(creep.x), round(creep.y))
+            if creep_pos == (gx, gy):
+                self.warning_message = (
+                    "Aktion verweigert: Eine Kreatur befindet sich auf diesem Feld!"
+                )
+                self.warning_timer = 2.0
+                return False
+            c_path = find_path_astar(
+                self.grid, start=creep_pos, goal=core_pos, blocked_tile=(gx, gy)
+            )
+            if c_path is None:
+                self.warning_message = (
+                    "Aktion verweigert: Eine aktive Kreatur würde eingesperrt werden!"
+                )
+                self.warning_timer = 3.0
+                self.audio.play("leak")
+                return False
+
+        self.economy.spend(cost)
         tower = Tower(
             x=gx,
             y=gy,
@@ -139,7 +279,15 @@ class BattleEngine:
         self.towers.append(tower)
         self.grid.get_tile(gx, gy).has_tower = True
         self.selected_tower = tower
+        self.warning_message = ""
+        self.warning_timer = 0.0
+
+        cx, cy = self.viewport.grid_center_to_screen(gx, gy)
+        self.particles.emit_burst(cx, cy, (130, 220, 255), count=16, speed=90.0)
         self.audio.play("shoot")
+
+        # Dynamically recalculate paths for swarm and alive creeps around the new tower
+        self._recalculate_swarm_path()
         return True
 
     def get_upgrade_cost(self, tower: Tower) -> int:
@@ -175,6 +323,7 @@ class BattleEngine:
         self.towers.remove(self.selected_tower)
         self.selected_tower = None
         self.audio.play("hit")
+        self._recalculate_swarm_path()
         return True
 
     def fuse_selected_tower(self, second_element: ElementType) -> bool:
@@ -224,6 +373,11 @@ class BattleEngine:
 
     def update(self, dt: float) -> None:
         """Main tick for simulation, movement, projectiles, and game progression."""
+        if self.warning_timer > 0:
+            self.warning_timer = max(0.0, self.warning_timer - dt)
+            if self.warning_timer == 0:
+                self.warning_message = ""
+
         self.starfield.update(dt)
         self.particles.update(dt)
 
@@ -305,7 +459,7 @@ class BattleEngine:
                 self.match_state.finish_wave_and_enter_draft()
 
     def handle_mouse_click(self, sx: int, sy: int, button: int) -> None:
-        """Processes player tactical interaction (build, select, dock shard)."""
+        """Processes player tactical interaction (build, select, dock shard, barrier)."""
         gx, gy = self.viewport.screen_to_grid(sx, sy)
 
         if button == 1:  # Left click
@@ -314,15 +468,55 @@ class BattleEngine:
                 and self.selected_draft_shard is not None
             ):
                 self.place_draft_shard(gx, gy)
-            elif self.match_state.current_state == GameState.PREPARATION:
-                # Check if clicking existing tower
+                return
+
+            if self.match_state.current_state in (GameState.PREPARATION, GameState.WAVE):
+                tile = self.grid.get_tile(gx, gy)
+
+                # 1. Click on existing tower
                 clicked_tower = next((t for t in self.towers if t.x == gx and t.y == gy), None)
                 if clicked_tower:
                     self.selected_tower = clicked_tower
-                elif self.grid.is_buildable(gx, gy):
+                    self.selected_barrier = None
+                    return
+
+                # 2. Click on existing barrier
+                if tile.has_barrier:
+                    self.selected_barrier = (gx, gy)
+                    self.selected_tower = None
+                    return
+
+                # 3. Build barrier if in BARRIER mode
+                if self.build_mode == "BARRIER":
+                    if self.grid.can_place_barrier(gx, gy):
+                        self.build_barrier(gx, gy)
+                    elif self.grid.is_buildable(gx, gy):
+                        self.warning_message = (
+                            "Äther-Wände können nur auf Gehwegen errichtet werden!"
+                        )
+                        self.warning_timer = 2.5
+                    return
+
+                # 4. Build tower if in TOWER mode
+                if self.grid.is_buildable(gx, gy):
                     self.build_tower(gx, gy, self.selected_build_element)
+                elif self.grid.can_place_barrier(gx, gy):
+                    self.warning_message = (
+                        "Wähle 'Äther-Wand' in der Bauleiste, um Gehwege zu blockieren!"
+                    )
+                    self.warning_timer = 2.5
                 else:
                     self.selected_tower = None
+                    self.selected_barrier = None
+
+        elif button == 3:  # Right click: Quick demolish barrier or deselect
+            tile = self.grid.get_tile(gx, gy)
+            if tile.has_barrier:
+                self.remove_barrier(gx, gy)
+                self.selected_barrier = None
+            else:
+                self.selected_tower = None
+                self.selected_barrier = None
 
     def draw(self, surface: pygame.Surface) -> None:
         """Full tactical frame rendering."""
@@ -330,14 +524,35 @@ class BattleEngine:
 
         self.starfield.draw(surface)
         self.viewport.draw_grid(surface, self.grid, self.hover_tile)
+        self.viewport.draw_path_telegraph(surface, self.cached_path)
         self.viewport.draw_towers(surface, self.towers, self.selected_tower)
         self.viewport.draw_creeps(surface, self.creeps)
         self.particles.draw(surface)
 
-        # Draw range preview ghost when hovering over a buildable tile
+        # Draw barrier ghost when hovering in BARRIER mode
         if (
             self.match_state.current_state in (GameState.PREPARATION, GameState.WAVE)
             and self.hover_tile
+            and self.build_mode == "BARRIER"
+            and self.grid.can_place_barrier(*self.hover_tile)
+        ):
+            cx, cy = self.viewport.grid_center_to_screen(*self.hover_tile)
+            r = self.viewport.tile_size // 3
+            barrier_rect = pygame.Rect(cx - r, cy - r, r * 2, r * 2)
+            ghost_surf = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
+            pygame.draw.rect(
+                ghost_surf, (79, 195, 247, 100), ghost_surf.get_rect(), border_radius=4
+            )
+            pygame.draw.rect(
+                ghost_surf, (130, 220, 255, 200), ghost_surf.get_rect(), 2, border_radius=4
+            )
+            surface.blit(ghost_surf, barrier_rect)
+
+        # Draw range preview ghost when hovering over a buildable tile in TOWER mode
+        if (
+            self.match_state.current_state in (GameState.PREPARATION, GameState.WAVE)
+            and self.hover_tile
+            and self.build_mode == "TOWER"
             and self.grid.is_buildable(*self.hover_tile)
         ):
             spec = ELEMENT_SPECS.get(self.selected_build_element)
@@ -352,6 +567,17 @@ class BattleEngine:
                     ghost_surf, (130, 220, 255, 140), (range_px + 2, range_px + 2), range_px, 1
                 )
                 surface.blit(ghost_surf, (cx - range_px - 2, cy - range_px - 2))
+
+        # Draw tactical warning banner if set
+        if self.warning_message:
+            txt_surf = self._warning_font.render(self.warning_message, True, (255, 100, 100))
+            bg_rect = txt_surf.get_rect(center=(self.width // 2, 75))
+            pad_rect = bg_rect.inflate(36, 16)
+            pill = pygame.Surface((pad_rect.width, pad_rect.height), pygame.SRCALPHA)
+            pygame.draw.rect(pill, (24, 12, 30, 230), pill.get_rect(), border_radius=8)
+            pygame.draw.rect(pill, (255, 80, 80), pill.get_rect(), 2, border_radius=8)
+            surface.blit(pill, pad_rect)
+            surface.blit(txt_surf, bg_rect)
 
         # Draw draft preview if in draft state and shard selected
         if (

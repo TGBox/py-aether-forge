@@ -16,6 +16,10 @@ def test_grid_initialization_and_tile_placement() -> None:
 
     grid.set_tile(2, 4, TileType.PLATFORM_BUILD)
     assert grid.is_buildable(2, 4)
+    # Build slots are walkable by swarms when unoccupied
+    assert grid.is_walkable(2, 4)
+    # Placing a tower on the build slot blocks movement
+    grid.get_tile(2, 4).has_tower = True
     assert not grid.is_walkable(2, 4)
 
 
@@ -74,6 +78,7 @@ def test_pathfinding_obstacle_detour() -> None:
 
     # Place wall / tower in between at (2, 2)
     grid.set_tile(2, 2, TileType.PLATFORM_BUILD)
+    grid.get_tile(2, 2).has_tower = True
 
     path = find_path_astar(grid, start=(0, 2), goal=(4, 2))
     assert path is not None

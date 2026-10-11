@@ -12,6 +12,7 @@ class TileType(Enum):
     PLATFORM_BUILD = auto()  # Solid foundation slot for towers
     CORE = auto()  # The astral world core (goal destination)
     PORTAL = auto()  # Chaos swarm spawn rift
+    BARRIER = auto()  # Player-built aether barrier wall
 
 
 @dataclass
@@ -22,6 +23,7 @@ class Tile:
     y: int
     tile_type: TileType = TileType.VOID
     has_tower: bool = False
+    has_barrier: bool = False
     rune_affinity: str | None = None  # e.g., 'FIRE_BONUS', 'RANGE_BONUS'
 
 
@@ -62,18 +64,40 @@ class Grid:
                 tile.rune_affinity = rune_affinity
 
     def is_walkable(self, x: int, y: int) -> bool:
-        """Checks if a tile can be traversed by enemy swarms."""
+        """Checks if a tile can be traversed by enemy swarms.
+
+        Enemy swarms can traverse walk paths, cores, portals, and unoccupied tower build slots.
+        Towers and aether barriers block traversal.
+        """
         if not self.in_bounds(x, y):
             return False
         tile = self.get_tile(x, y)
-        return tile.tile_type in (TileType.PLATFORM_WALK, TileType.CORE, TileType.PORTAL)
+        if tile.has_barrier or tile.has_tower:
+            return False
+        return tile.tile_type in (
+            TileType.PLATFORM_WALK,
+            TileType.PLATFORM_BUILD,
+            TileType.CORE,
+            TileType.PORTAL,
+        )
 
     def is_buildable(self, x: int, y: int) -> bool:
-        """Checks if a tower can be placed on this tile."""
+        """Checks if a tower can be placed on this designated build slot."""
         if not self.in_bounds(x, y):
             return False
         tile = self.get_tile(x, y)
-        return tile.tile_type == TileType.PLATFORM_BUILD and not tile.has_tower
+        if tile.has_tower or tile.has_barrier:
+            return False
+        return tile.tile_type == TileType.PLATFORM_BUILD
+
+    def can_place_barrier(self, x: int, y: int) -> bool:
+        """Checks if an aether barrier wall can be placed on this platform tile."""
+        if not self.in_bounds(x, y):
+            return False
+        tile = self.get_tile(x, y)
+        if tile.has_barrier or tile.has_tower:
+            return False
+        return tile.tile_type in (TileType.PLATFORM_WALK, TileType.PLATFORM_BUILD)
 
     def get_neighbors(self, x: int, y: int) -> list[Tile]:
         """Returns the 4 orthogonal neighbor tiles that are within bounds."""

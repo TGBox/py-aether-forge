@@ -83,11 +83,41 @@ class Viewport:
                         surface, COLORS.portal_purple, (cx, cy), self.tile_size // 3, 3
                     )
 
+                # Draw barrier monolith if placed
+                if tile.has_barrier:
+                    cx, cy = self.grid_center_to_screen(x, y)
+                    r = self.tile_size // 3
+                    # Crystal barrier
+                    barrier_rect = pygame.Rect(cx - r, cy - r, r * 2, r * 2)
+                    pygame.draw.rect(surface, (15, 35, 55), barrier_rect, border_radius=4)
+                    pygame.draw.rect(surface, (79, 195, 247), barrier_rect, 2, border_radius=4)
+                    pygame.draw.line(
+                        surface, (130, 220, 255), (cx - r + 3, cy), (cx + r - 3, cy), 2
+                    )
+                    pygame.draw.line(
+                        surface, (130, 220, 255), (cx, cy - r + 3), (cx, cy + r - 3), 2
+                    )
+
                 # Hover highlight
                 if hover_tile == (x, y):
                     highlight = pygame.Surface((self.tile_size, self.tile_size), pygame.SRCALPHA)
                     highlight.fill((255, 255, 255, 40))
                     surface.blit(highlight, (sx, sy))
+
+    def draw_path_telegraph(
+        self, surface: pygame.Surface, path: list[tuple[int, int]] | None
+    ) -> None:
+        """Renders a soft glowing path line indicating the route the swarms will follow."""
+        if not path or len(path) < 2:
+            return
+
+        points = [self.grid_center_to_screen(gx, gy) for gx, gy in path]
+        # Glow line
+        pygame.draw.lines(surface, (50, 160, 220, 100), False, points, 3)
+        # Small route beads
+        for i, pt in enumerate(points):
+            if i % 2 == 0:
+                pygame.draw.circle(surface, (130, 220, 255), pt, 3)
 
     def draw_towers(
         self,

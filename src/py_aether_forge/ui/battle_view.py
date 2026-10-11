@@ -1,7 +1,11 @@
 """Interactive Battle View embedding Pygame combat engine inside PySide6 with rich tactical HUD."""
 
+import logging
+
 import pygame
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+
+logger = logging.getLogger(__name__)
 from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPainter
 from PySide6.QtWidgets import (
     QComboBox,
@@ -268,6 +272,37 @@ class BattleViewWidget(QWidget):
             buttons_row.addWidget(btn)
             self.elem_buttons[elem] = btn
 
+        # Barrier wall button for mazing
+        self.btn_barrier = QPushButton()
+        self.btn_barrier.setCheckable(True)
+        self.btn_barrier.setText("🛡 Äther-Wand (20 ✨)\nPfadsperre & Mazing\n[100% Rückerstattung]")
+        self.btn_barrier.setToolTip(
+            "Äther-Wand (20 ✨)\n\n"
+            "Errichtet eine kristallisierte Barriere auf einer Gehweg-Kachel, um Chaos-Schwärme auf Umwege zu lenken.\n"
+            "Rechtsklick auf eine gebaute Wand reißt sie sofort ab (+20 ✨ Rückerstattung)."
+        )
+        self.btn_barrier.setStyleSheet("""
+            QPushButton {
+                background: #142838;
+                color: #E0F7FA;
+                border: 2px solid #4FC3F7;
+                padding: 8px 12px;
+                border-radius: 6px;
+                text-align: left;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background: #1D3B52;
+            }
+            QPushButton:checked {
+                background: #25587D;
+                border: 2px solid #FFCD3C;
+                font-weight: bold;
+            }
+        """)
+        self.btn_barrier.clicked.connect(self._set_barrier_mode)
+        buttons_row.addWidget(self.btn_barrier)
+
         vbox.addLayout(buttons_row)
         self._set_build_element(ElementType.FIRE)
 
@@ -307,9 +342,9 @@ class BattleViewWidget(QWidget):
         row2.setSpacing(10)
 
         # Target Mode combo
-        lbl_tm = QLabel("Zielpriorität:")
-        lbl_tm.setStyleSheet("color: #91A0C3; font-weight: bold;")
-        row2.addWidget(lbl_tm)
+        self.lbl_target_mode = QLabel("Zielpriorität:")
+        self.lbl_target_mode.setStyleSheet("color: #91A0C3; font-weight: bold;")
+        row2.addWidget(self.lbl_target_mode)
 
         self.combo_target_mode = QComboBox()
         for mode, name in TARGET_MODE_NAMES_DE.items():
@@ -351,7 +386,7 @@ class BattleViewWidget(QWidget):
 
         row2.addStretch()
 
-        # Sell Button
+        # Sell / Demolish Button
         self.btn_sell = QPushButton("✕ Abreißen (+?? ✨)")
         self.btn_sell.setStyleSheet("""
             QPushButton {
@@ -371,7 +406,10 @@ class BattleViewWidget(QWidget):
 
     def _set_build_element(self, element: ElementType) -> None:
         if self.engine:
+            self.engine.build_mode = "TOWER"
             self.engine.selected_build_element = element
+        if hasattr(self, "btn_barrier"):
+            self.btn_barrier.setChecked(False)
         for elem, btn in self.elem_buttons.items():
             btn.setChecked(elem == element)
 
@@ -381,9 +419,20 @@ class BattleViewWidget(QWidget):
                 f"Auswahl: {spec.name_de} ({spec.cost} ✨) • Reichweite: {spec.range_radius} Felder • {spec.effect_name_de}"
             )
 
+    def _set_barrier_mode(self) -> None:
+        if self.engine:
+            self.engine.build_mode = "BARRIER"
+        for btn in self.elem_buttons.values():
+            btn.setChecked(False)
+        self.btn_barrier.setChecked(True)
+        self.lbl_build_info.setText(
+            "Auswahl: Äther-Wand (20 ✨) • Klicke auf Gehwege zum Platzieren (Rechtsklick reißt Wand ab)!"
+        )
+
     def _deselect_tower(self) -> None:
         if self.engine:
             self.engine.selected_tower = None
+            self.engine.selected_barrier = None
         self.inspector_panel.hide()
         self.build_bar.show()
 
@@ -400,7 +449,11 @@ class BattleViewWidget(QWidget):
 
     def _on_sell_clicked(self) -> None:
         if self.engine:
-            self.engine.sell_selected_tower()
+            if self.engine.selected_barrier:
+                self.engine.remove_barrier(*self.engine.selected_barrier)
+                self.engine.selected_barrier = None
+            elif self.engine.selected_tower:
+                self.engine.sell_selected_tower()
             self._deselect_tower()
 
     def _on_start_wave_clicked(self) -> None:
@@ -459,13 +512,26 @@ class BattleViewWidget(QWidget):
                 self.btn_start_wave.setEnabled(False)
 
             # Inspector vs Build Bar
-            if self.engine.selected_tower:
+            if self.engine.selected_tower or self.engine.selected_barrier:
                 self.build_bar.hide()
                 self._update_inspector()
                 self.inspector_panel.show()
             else:
                 self.inspector_panel.hide()
                 self.build_bar.show()
+
+                if self.engine.warning_message:
+                    self.lbl_build_info.setStyleSheet(
+                        "color: #FF5A70; font-size: 13px; font-weight: bold;"
+                    )
+                    self.lbl_build_info.setText(f"⚠ {self.engine.warning_message}")
+                elif self.engine.build_mode == "BARRIER":
+                    self.lbl_build_info.setStyleSheet(
+                        "color: #82DCFF; font-size: 12px; font-style: italic;"
+                    )
+                    self.lbl_build_info.setText(
+                        "Auswahl: Äther-Wand (20 ✨) • Klicke auf Gehwege zum Platzieren (Rechtsklick reißt Wand ab)!"
+                    )
 
     def _check_and_show_draft(self) -> None:
         """Ensures draft options for the current wave are displayed."""
@@ -548,8 +614,31 @@ class BattleViewWidget(QWidget):
                 )
 
     def _update_inspector(self) -> None:
-        if not self.engine or not self.engine.selected_tower:
+        if not self.engine:
             return
+
+        if self.engine.selected_barrier:
+            gx, gy = self.engine.selected_barrier
+            self.lbl_insp_title.setText("🛡 Äther-Barriere (Wand)")
+            self.lbl_insp_stats.setText(
+                f"Position: ({gx}, {gy}) • Blockiert Wegpunkt • 100% Rückerstattung (20 ✨)"
+            )
+            self.lbl_target_mode.hide()
+            self.combo_target_mode.hide()
+            self.btn_upgrade.hide()
+            self.fusion_container.hide()
+            self.btn_sell.setText("✕ Wand abreißen (+20 ✨)")
+            self.btn_sell.show()
+            return
+
+        if not self.engine.selected_tower:
+            return
+
+        self.lbl_target_mode.show()
+        self.combo_target_mode.show()
+        self.btn_upgrade.show()
+        self.fusion_container.show()
+        self.btn_sell.show()
 
         t = self.engine.selected_tower
         spec = ELEMENT_SPECS.get(t.element)
@@ -660,12 +749,15 @@ class BattleViewWidget(QWidget):
         if not self.engine or not self.pygame_surface:
             return
 
-        w, h = self.width(), self.height()
+        w, h = max(1, self.width()), max(1, self.height())
         if self.pygame_surface.get_size() != (w, h):
             self.pygame_surface = pygame.Surface((w, h))
             self.engine.starfield.resize(w, h)
 
-        self.engine.draw(self.pygame_surface)
+        try:
+            self.engine.draw(self.pygame_surface)
+        except (pygame.error, RuntimeError) as err:
+            logger.debug("Render exception caught in paintEvent: %s", err)
 
         raw_data = pygame.image.tobytes(self.pygame_surface, "RGBA")
         qimage = QImage(raw_data, w, h, QImage.Format.Format_RGBA8888)
